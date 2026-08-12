@@ -102,6 +102,14 @@ def api_deploy(config: DeploymentConfig):
         raise HTTPException(400, str(exc))
 
 
+@app.post("/api/deployments/preflight")
+def api_preflight(config: DeploymentConfig):
+    # No try/except needed: preflight() is designed to never raise for
+    # expected failure modes (missing model, docker down, etc) -- those
+    # come back as checks with status "fail", not exceptions.
+    return deployment_manager.preflight(settings, config)
+
+
 @app.get("/api/deployments")
 def api_deployments():
     return deployment_manager.list_deployments()

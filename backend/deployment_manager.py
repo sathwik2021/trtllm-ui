@@ -13,6 +13,7 @@ from urllib.error import URLError
 
 from pydantic import BaseModel, Field
 
+from . import gpu_monitor, vram_estimator
 from .capability_probe import cached_manifest
 from .model_manager import get_model
 from .settings import AppSettings
@@ -48,6 +49,11 @@ class DeploymentConfig(BaseModel):
     custom_module_dirs: str | None = None
     unsafe_ack: str | None = None
     extra_flags: dict[str, Any] = Field(default_factory=dict)
+    # Informational only -- NOT a trtllm-serve CLI flag (no confirmed
+    # --max_output_len equivalent exists in this build's serve --help
+    # output). Used purely as an input to the VRAM pre-flight estimate
+    # (see vram_estimator.estimate); build_command never emits it.
+    max_output_tokens: int | None = None
 
 
 _deployments: dict[str, dict[str, Any]] = {}
@@ -166,6 +172,15 @@ def build_command(settings: AppSettings, config: DeploymentConfig, deployment_id
 
     if (config.trust_remote_code or config.custom_module_dirs) and config.unsafe_ack != "ENABLE UNSAFE":
         raise ValueError('Unsafe flags require unsafe_ack == "ENABLE UNSAFE"')
+
+    manifest_for_gate = cached_manifest(settings)
+    if manifest_for_gate is not None and config.kv_cache_dtype:
+        kv_options = manifest_for_gate.get("parsed", {}).get("kv_cache_dtype_options")
+        if kv_options is not None and config.kv_cache_dtype.lower() not in [o.lower() for o in kv_options]:
+            raise ValueError(
+                f"kv_cache_dtype '{config.kv_cache_dtype}' is not supported by the detected GPU/image "
+                f"(supported: {kv_options}). This is a hardware/build capability gate, not a typo check."
+            )
 
     model = get_model(settings, config.model_name)
     cmd = [
@@ -462,6 +477,96 @@ def log_stream(deployment_id: str):
     finally:
         if p.poll() is None:
             p.terminate()
+
+
+def preflight(settings: AppSettings, config: DeploymentConfig) -> dict[str, Any]:
+    """Read-only pre-flight validation, run BEFORE `docker run` is attempted.
+
+    Returns a structured report -- never raises for expected failure modes
+    (missing model, Docker down, GPU down, port taken) so the UI can show
+    all of them at once instead of stopping at the first exception. This is
+    advisory: a config that comes back "feasible" can still fail at actual
+    deploy time (see vram_estimator's module docstring) -- the real
+    trtllm-serve/Docker/GPU stack is the final authority, not this check.
+    """
+    checks: list[dict[str, Any]] = []
+
+    def add(name: str, status: str, detail: str) -> None:
+        checks.append({"name": name, "status": status, "detail": detail})
+
+    # 1. model exists & is a usable HF checkpoint
+    model = None
+    try:
+        model = get_model(settings, config.model_name)
+        add("model", "pass", f"found at {model['host_path']}")
+    except KeyError as exc:
+        add("model", "fail", str(exc))
+
+    # 2. docker daemon reachable
+    docker_info = subprocess.run(
+        ["docker", "info", "--format", "{{.ServerVersion}}"],
+        capture_output=True, text=True, check=False,
+    )
+    docker_ok = docker_info.returncode == 0
+    add("docker", "pass" if docker_ok else "fail",
+        docker_info.stdout.strip() if docker_ok else (docker_info.stderr or docker_info.stdout or "docker not reachable").strip())
+
+    # 3. GPU reachable
+    gpu = gpu_monitor.poll()
+    gpu_ok = "error" not in gpu and bool(gpu.get("gpus"))
+    add("gpu", "pass" if gpu_ok else "fail",
+        f"{len(gpu.get('gpus', []))} GPU(s) detected" if gpu_ok else gpu.get("error", "no GPU detected"))
+
+    # 4. capability-manifest-driven checks: kv_cache_dtype + parallelism vs detected GPU count.
+    # Both are skipped (warn, not fail) if the capability probe hasn't run yet --
+    # we don't know enough to judge, and that's different from judging it unsupported.
+    manifest = cached_manifest(settings)
+    parsed = (manifest or {}).get("parsed", {})
+    if manifest is None:
+        add("capability_manifest", "warn", "not probed yet -- POST /api/capabilities/probe for capability-aware checks")
+    else:
+        kv_options = parsed.get("kv_cache_dtype_options")
+        if config.kv_cache_dtype and kv_options is not None:
+            ok = config.kv_cache_dtype.lower() in [o.lower() for o in kv_options]
+            add("kv_cache_dtype", "pass" if ok else "fail",
+                f"'{config.kv_cache_dtype}' {'is supported' if ok else 'is not in supported options'}: {kv_options}")
+
+        parallel_max = parsed.get("parallel_max")
+        requested = max(config.tensor_parallel_size, config.pipeline_parallel_size,
+                         config.context_parallel_size, config.moe_expert_parallel_size)
+        if parallel_max is not None and requested > 1:
+            ok = requested <= parallel_max
+            add("parallelism", "pass" if ok else "fail",
+                f"requested parallelism {requested} vs {parallel_max} GPU(s) detected")
+
+    # 5. port availability (read-only check; excludes this deployment's own record, same as build_command)
+    deployment_id = _slugify(config.name or config.model_name)
+    with _lock:
+        occupied = {did: d["port"] for did, d in _deployments.items() if did != deployment_id}
+    port_in_range = 1024 <= config.port <= 65535
+    port_ok = port_in_range and config.port not in occupied.values() and _port_free(config.port)
+    add("port", "pass" if port_ok else "fail",
+        f"port {config.port} is free" if port_ok else f"port {config.port} is out of range or already in use")
+
+    # 6. VRAM estimate -- heuristic, see vram_estimator module docstring.
+    vram = None
+    if model is not None and gpu_ok:
+        vram = vram_estimator.estimate(
+            model, config.max_batch_size, config.max_seq_len,
+            config.max_output_tokens, config.kv_cache_dtype,
+        )
+        try:
+            total = int(gpu["gpus"][0]["memory_total"])
+            used = int(gpu["gpus"][0]["memory_used"])
+            free_mb = total - used
+            sufficient = vram["total_estimated_mb"] <= free_mb
+            add("vram", "pass" if sufficient else "warn",
+                f"~{vram['total_estimated_mb']}MB estimated vs ~{free_mb}MB free (heuristic, approximate -- not exact)")
+        except (KeyError, ValueError, IndexError):
+            add("vram", "warn", "could not read GPU memory figures to compare against estimate")
+
+    feasible = not any(c["status"] == "fail" for c in checks)
+    return {"checks": checks, "vram_estimate": vram, "feasible": feasible}
 
 
 def generated_command(deployment_id: str) -> dict[str, Any]:

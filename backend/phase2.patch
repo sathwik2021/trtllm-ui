@@ -1,0 +1,440 @@
+diff --git a/backend/capability_probe.py b/backend/capability_probe.py
+index 68d37ad..9396aa1 100644
+--- a/backend/capability_probe.py
++++ b/backend/capability_probe.py
+@@ -49,6 +49,108 @@ def _image_tag(image: str) -> str:
+     return image.replace("/", "_").replace(":", "_").replace("@", "_")
+ 
+ 
++def _parse_gpus(csv_text: str) -> list[dict[str, Any]]:
++    """Parse `nvidia-smi --query-gpu=name,memory.total,memory.free,driver_version,compute_cap
++    --format=csv` output. Returns [] if nvidia-smi failed or produced nothing --
++    callers must treat an empty list as "unknown", never assume 1 GPU exists.
++    """
++    lines = [ln.strip() for ln in csv_text.splitlines() if ln.strip()]
++    if not lines or "name" not in lines[0].lower():
++        return []
++    gpus = []
++    for line in lines[1:]:
++        parts = [p.strip() for p in line.split(",")]
++        if len(parts) < 5:
++            continue
++        name, mem_total, mem_free, driver, compute_cap = parts[:5]
++        try:
++            total_mb = int(re.sub(r"[^0-9]", "", mem_total) or 0)
++        except ValueError:
++            total_mb = None
++        try:
++            free_mb = int(re.sub(r"[^0-9]", "", mem_free) or 0)
++        except ValueError:
++            free_mb = None
++        try:
++            cc = float(compute_cap)
++        except ValueError:
++            cc = None
++        gpus.append({
++            "name": name,
++            "vram_total_mb": total_mb,
++            "vram_free_mb": free_mb,
++            "driver_version": driver,
++            "compute_capability": cc,
++        })
++    return gpus
++
++
++def _precision_capabilities(compute_cap: float | None) -> dict[str, Any]:
++    """Derive precision/quantization capability from compute capability (SM version).
++    This is a HARDWARE ceiling, not a software confirmation -- an entry marked
++    supported=True here still needs runtime testing against this exact TRT-LLM
++    build before being trusted; entries marked supported=False are a hard
++    hardware exclusion (no image/version/config change will enable them) and
++    should be omitted from UI option lists entirely, not shown disabled.
++
++    Thresholds (Compute Capability / SM version):
++      FP16   -- supported on all CUDA-capable GPUs this app targets
++      BF16   -- Ampere (SM80) and later have BF16 tensor core paths
++      INT8   -- Turing (SM75) and later have INT8 tensor core paths
++      FP8    -- Ada Lovelace (SM89) / Hopper (SM90) and later ONLY
++      NVFP4  -- Blackwell (SM100) and later ONLY
++    """
++    if compute_cap is None:
++        return {
++            "fp16": {"supported": None, "confidence": "unknown", "note": "compute capability not detected"},
++            "bf16": {"supported": None, "confidence": "unknown", "note": "compute capability not detected"},
++            "int8": {"supported": None, "confidence": "unknown", "note": "compute capability not detected"},
++            "fp8": {"supported": None, "confidence": "unknown", "note": "compute capability not detected"},
++            "nvfp4": {"supported": None, "confidence": "unknown", "note": "compute capability not detected"},
++        }
++    return {
++        "fp16": {"supported": True, "confidence": "confirmed", "note": "baseline precision, already the working setup"},
++        "bf16": {
++            "supported": compute_cap >= 8.0,
++            "confidence": "hardware_only" if compute_cap >= 8.0 else "confirmed",
++            "note": "Ampere+ has BF16 tensor cores; needs testing against this TRT-LLM build specifically" if compute_cap >= 8.0 else "no BF16 tensor core path on this GPU",
++        },
++        "int8": {
++            "supported": compute_cap >= 7.5,
++            "confidence": "hardware_only" if compute_cap >= 7.5 else "confirmed",
++            "note": "hardware capable; software path (calibration/quantization tooling) unconfirmed on this image" if compute_cap >= 7.5 else "no INT8 tensor core path on this GPU",
++        },
++        "fp8": {
++            "supported": compute_cap >= 8.9,
++            "confidence": "confirmed",
++            "note": "requires Ada Lovelace (SM89) or Hopper (SM90)+; hard hardware exclusion below that" if compute_cap < 8.9 else "hardware capable; needs testing against this TRT-LLM build",
++        },
++        "nvfp4": {
++            "supported": compute_cap >= 10.0,
++            "confidence": "confirmed",
++            "note": "requires Blackwell (SM100)+; hard hardware exclusion below that" if compute_cap < 10.0 else "hardware capable; needs testing against this TRT-LLM build",
++        },
++    }
++
++
++def _kv_cache_dtype_options(precision: dict[str, Any]) -> list[str]:
++    """Which --kv_cache_dtype values are worth offering in the UI.
++
++    "auto" is always safe (lets trtllm-serve pick). Everything else is
++    gated on the same hardware capability table as main-weight precision,
++    since KV-cache quantization uses the same tensor core paths -- e.g.
++    fp8 KV cache is just as hardware-excluded on Ampere as fp8 weights.
++    """
++    options = ["auto"]
++    if precision.get("int8", {}).get("supported"):
++        options.append("int8")
++    if precision.get("fp8", {}).get("supported"):
++        options.append("fp8")
++    if precision.get("nvfp4", {}).get("supported"):
++        options.append("fp4")
++    return options
++
++
+ def run_probe(settings: AppSettings) -> dict[str, Any]:
+     with _probe_lock:
+         image = settings.docker_image
+@@ -71,6 +173,26 @@ def run_probe(settings: AppSettings) -> dict[str, Any]:
+                 result = _run(["docker", "system", "df"])
+             results.append(result)
+ 
++        gpus = _parse_gpus(results[0]["stdout"])
++        gpu_count = len(gpus)
++        # Compute capability may legitimately differ across GPUs on a
++        # multi-GPU box; precision capability is computed per-GPU and the
++        # UI-facing "precision" summary uses the MINIMUM across all
++        # detected GPUs, since a mixed-precision UI offer that only some
++        # GPUs can execute is worse than an overly conservative one.
++        per_gpu_precision = [_precision_capabilities(g["compute_capability"]) for g in gpus]
++        if per_gpu_precision:
++            precision = {}
++            for key in per_gpu_precision[0]:
++                supported_vals = [p[key]["supported"] for p in per_gpu_precision]
++                precision[key] = per_gpu_precision[0][key] if len(per_gpu_precision) == 1 else {
++                    "supported": all(bool(v) for v in supported_vals) if None not in supported_vals else None,
++                    "confidence": per_gpu_precision[0][key]["confidence"],
++                    "note": per_gpu_precision[0][key]["note"],
++                }
++        else:
++            precision = _precision_capabilities(None)
++
+         manifest = {
+             "probed_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+             "image": image,
+@@ -79,7 +201,19 @@ def run_probe(settings: AppSettings) -> dict[str, Any]:
+             "parsed": {
+                 "serve_flags": _parse_flags(
+                     results[3]["stdout"] + "\n" + results[3]["stderr"]
+-                )
++                ),
++                "gpu": {
++                    "count": gpu_count,
++                    "gpus": gpus,
++                    # None (not 1) when nvidia-smi produced nothing -- callers
++                    # must not silently assume single-GPU on a failed probe.
++                },
++                "precision": precision,
++                "kv_cache_dtype_options": _kv_cache_dtype_options(precision),
++                # Parallelism dimensions are only meaningful with >1 GPU.
++                # max=1 (or unknown if gpu_count is 0/undetected) means the
++                # UI should hide the corresponding selector, not just default it to 1.
++                "parallel_max": gpu_count if gpu_count > 0 else None,
+             },
+         }
+         settings.materialize_dirs()
+diff --git a/backend/deployment_manager.py b/backend/deployment_manager.py
+index 110078a..f14a229 100644
+--- a/backend/deployment_manager.py
++++ b/backend/deployment_manager.py
+@@ -13,6 +13,7 @@ from urllib.error import URLError
+ 
+ from pydantic import BaseModel, Field
+ 
++from . import gpu_monitor, vram_estimator
+ from .capability_probe import cached_manifest
+ from .model_manager import get_model
+ from .settings import AppSettings
+@@ -48,6 +49,11 @@ class DeploymentConfig(BaseModel):
+     custom_module_dirs: str | None = None
+     unsafe_ack: str | None = None
+     extra_flags: dict[str, Any] = Field(default_factory=dict)
++    # Informational only -- NOT a trtllm-serve CLI flag (no confirmed
++    # --max_output_len equivalent exists in this build's serve --help
++    # output). Used purely as an input to the VRAM pre-flight estimate
++    # (see vram_estimator.estimate); build_command never emits it.
++    max_output_tokens: int | None = None
+ 
+ 
+ _deployments: dict[str, dict[str, Any]] = {}
+@@ -167,6 +173,15 @@ def build_command(settings: AppSettings, config: DeploymentConfig, deployment_id
+     if (config.trust_remote_code or config.custom_module_dirs) and config.unsafe_ack != "ENABLE UNSAFE":
+         raise ValueError('Unsafe flags require unsafe_ack == "ENABLE UNSAFE"')
+ 
++    manifest_for_gate = cached_manifest(settings)
++    if manifest_for_gate is not None and config.kv_cache_dtype:
++        kv_options = manifest_for_gate.get("parsed", {}).get("kv_cache_dtype_options")
++        if kv_options is not None and config.kv_cache_dtype.lower() not in [o.lower() for o in kv_options]:
++            raise ValueError(
++                f"kv_cache_dtype '{config.kv_cache_dtype}' is not supported by the detected GPU/image "
++                f"(supported: {kv_options}). This is a hardware/build capability gate, not a typo check."
++            )
++
+     model = get_model(settings, config.model_name)
+     cmd = [
+         "docker", "run", "-d",
+@@ -464,6 +479,96 @@ def log_stream(deployment_id: str):
+             p.terminate()
+ 
+ 
++def preflight(settings: AppSettings, config: DeploymentConfig) -> dict[str, Any]:
++    """Read-only pre-flight validation, run BEFORE `docker run` is attempted.
++
++    Returns a structured report -- never raises for expected failure modes
++    (missing model, Docker down, GPU down, port taken) so the UI can show
++    all of them at once instead of stopping at the first exception. This is
++    advisory: a config that comes back "feasible" can still fail at actual
++    deploy time (see vram_estimator's module docstring) -- the real
++    trtllm-serve/Docker/GPU stack is the final authority, not this check.
++    """
++    checks: list[dict[str, Any]] = []
++
++    def add(name: str, status: str, detail: str) -> None:
++        checks.append({"name": name, "status": status, "detail": detail})
++
++    # 1. model exists & is a usable HF checkpoint
++    model = None
++    try:
++        model = get_model(settings, config.model_name)
++        add("model", "pass", f"found at {model['host_path']}")
++    except KeyError as exc:
++        add("model", "fail", str(exc))
++
++    # 2. docker daemon reachable
++    docker_info = subprocess.run(
++        ["docker", "info", "--format", "{{.ServerVersion}}"],
++        capture_output=True, text=True, check=False,
++    )
++    docker_ok = docker_info.returncode == 0
++    add("docker", "pass" if docker_ok else "fail",
++        docker_info.stdout.strip() if docker_ok else (docker_info.stderr or docker_info.stdout or "docker not reachable").strip())
++
++    # 3. GPU reachable
++    gpu = gpu_monitor.poll()
++    gpu_ok = "error" not in gpu and bool(gpu.get("gpus"))
++    add("gpu", "pass" if gpu_ok else "fail",
++        f"{len(gpu.get('gpus', []))} GPU(s) detected" if gpu_ok else gpu.get("error", "no GPU detected"))
++
++    # 4. capability-manifest-driven checks: kv_cache_dtype + parallelism vs detected GPU count.
++    # Both are skipped (warn, not fail) if the capability probe hasn't run yet --
++    # we don't know enough to judge, and that's different from judging it unsupported.
++    manifest = cached_manifest(settings)
++    parsed = (manifest or {}).get("parsed", {})
++    if manifest is None:
++        add("capability_manifest", "warn", "not probed yet -- POST /api/capabilities/probe for capability-aware checks")
++    else:
++        kv_options = parsed.get("kv_cache_dtype_options")
++        if config.kv_cache_dtype and kv_options is not None:
++            ok = config.kv_cache_dtype.lower() in [o.lower() for o in kv_options]
++            add("kv_cache_dtype", "pass" if ok else "fail",
++                f"'{config.kv_cache_dtype}' {'is supported' if ok else 'is not in supported options'}: {kv_options}")
++
++        parallel_max = parsed.get("parallel_max")
++        requested = max(config.tensor_parallel_size, config.pipeline_parallel_size,
++                         config.context_parallel_size, config.moe_expert_parallel_size)
++        if parallel_max is not None and requested > 1:
++            ok = requested <= parallel_max
++            add("parallelism", "pass" if ok else "fail",
++                f"requested parallelism {requested} vs {parallel_max} GPU(s) detected")
++
++    # 5. port availability (read-only check; excludes this deployment's own record, same as build_command)
++    deployment_id = _slugify(config.name or config.model_name)
++    with _lock:
++        occupied = {did: d["port"] for did, d in _deployments.items() if did != deployment_id}
++    port_in_range = 1024 <= config.port <= 65535
++    port_ok = port_in_range and config.port not in occupied.values() and _port_free(config.port)
++    add("port", "pass" if port_ok else "fail",
++        f"port {config.port} is free" if port_ok else f"port {config.port} is out of range or already in use")
++
++    # 6. VRAM estimate -- heuristic, see vram_estimator module docstring.
++    vram = None
++    if model is not None and gpu_ok:
++        vram = vram_estimator.estimate(
++            model, config.max_batch_size, config.max_seq_len,
++            config.max_output_tokens, config.kv_cache_dtype,
++        )
++        try:
++            total = int(gpu["gpus"][0]["memory_total"])
++            used = int(gpu["gpus"][0]["memory_used"])
++            free_mb = total - used
++            sufficient = vram["total_estimated_mb"] <= free_mb
++            add("vram", "pass" if sufficient else "warn",
++                f"~{vram['total_estimated_mb']}MB estimated vs ~{free_mb}MB free (heuristic, approximate -- not exact)")
++        except (KeyError, ValueError, IndexError):
++            add("vram", "warn", "could not read GPU memory figures to compare against estimate")
++
++    feasible = not any(c["status"] == "fail" for c in checks)
++    return {"checks": checks, "vram_estimate": vram, "feasible": feasible}
++
++
+ def generated_command(deployment_id: str) -> dict[str, Any]:
+     record = get_status(deployment_id)
+     cmd = record.get("command", [])
+diff --git a/backend/main.py b/backend/main.py
+index 8410e59..45921eb 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -102,6 +102,14 @@ def api_deploy(config: DeploymentConfig):
+         raise HTTPException(400, str(exc))
+ 
+ 
++@app.post("/api/deployments/preflight")
++def api_preflight(config: DeploymentConfig):
++    # No try/except needed: preflight() is designed to never raise for
++    # expected failure modes (missing model, docker down, etc) -- those
++    # come back as checks with status "fail", not exceptions.
++    return deployment_manager.preflight(settings, config)
++
++
+ @app.get("/api/deployments")
+ def api_deployments():
+     return deployment_manager.list_deployments()
+diff --git a/frontend/app.js b/frontend/app.js
+index 6668146..ab3215f 100644
+--- a/frontend/app.js
++++ b/frontend/app.js
+@@ -28,16 +28,31 @@ async function show(page){
+   else if(page==="profiles") profiles();
+   else if(page==="diagnostics") diagnostics();
+ }
++function capParsed(){return state.caps?.manifest?.parsed || null;}
++function precisionBadges(precision){
++  if(!precision) return "";
++  return Object.entries(precision).map(([k,v])=>{
++    const sup=v.supported;
++    const cls=sup===true?"success":sup===false?"muted":"warn";
++    const label=sup===true?"available":sup===false?"unavailable (hardware)":"unknown";
++    return `<span class="${cls}" title="${esc(v.note||"")}">${k.toUpperCase()}: ${label}</span>`;
++  }).join(" &nbsp; ");
++}
+ function dashboard(){
+   const c=state.caps;
+   const g=c?.manifest?.commands?.[0]?.stdout || "";
++  const parsed=capParsed();
++  const gpu=parsed?.gpu?.gpus?.[0];
+   app.innerHTML=`<div class="card"><h2>Dashboard</h2>
+     <p>Control panel: <b>${esc(location.origin)}</b></p>
+     <p>Model directory: <code>${esc(state.settings.model_dir)}</code></p>
+     <p>Data directory: <code>${esc(state.settings.data_dir)}</code></p>
+     ${state.settings.path_warnings?.length?`<div class="danger">${state.settings.path_warnings.map(esc).join("<br>")}</div>`:""}
+     <h3>Diagnostics</h3>
+-    ${c.status==="not_yet_probed"?`<p class="muted">Not yet probed.</p>`:`<p class="success">Last probe: ${esc(c.manifest.probed_at)}</p><pre>${esc(g)}</pre>`}
++    ${c.status==="not_yet_probed"?`<p class="muted">Not yet probed — capability-aware checks (precision, kv_cache_dtype options, VRAM pre-flight) stay disabled until you probe once.</p>`:`<p class="success">Last probe: ${esc(c.manifest.probed_at)}</p>`}
++    ${gpu?`<p><b>${esc(gpu.name)}</b> — ${esc(String(gpu.vram_total_mb))}MB total, ${esc(String(gpu.vram_free_mb))}MB free at probe time, compute capability ${esc(String(gpu.compute_capability))}, ${esc(String(parsed.gpu.count))} GPU(s) detected</p>
++    <p>${precisionBadges(parsed.precision)}</p>`:""}
++    ${c.status!=="not_yet_probed"?`<pre>${esc(g)}</pre>`:""}
+     <button onclick="show('diagnostics')">Run Diagnostics</button>
+   </div>
+   <div class="card"><h3>Deployments</h3>${state.deployments.map(d=>`<p><b>${esc(d.deployment_id)}</b> — ${esc(d.status)} — port ${esc(d.port)}</p>`).join("")||"None"}</div>`;
+@@ -49,6 +64,17 @@ function models(){
+ function prepareDeploy(name){show("deploy").then(()=>{document.getElementById("model").value=name; document.getElementById("served").value=name; updateCommand();});}
+ function deploy(){
+   const options=state.models.map(m=>`<option>${esc(m.name)}</option>`).join("");
++  const parsed=capParsed();
++  const kvOptions=parsed?.kv_cache_dtype_options||null;
++  const parallelMax=parsed?.parallel_max;
++  // Capability-driven: parallelism dimensions are moot with <=1 detected GPU
++  // (or unknown, if never probed) -- hide the controls rather than show
++  // disabled/default-1 selectors nobody on this hardware can use.
++  const showParallelism = parallelMax!=null && parallelMax>1;
++  const kvField = kvOptions
++    ? `<select id="kv" onchange="updateCommand()"><option value="">(unset)</option>${kvOptions.map(o=>`<option>${esc(o)}</option>`).join("")}</select>
++       <p class="muted">Options limited to what the last capability probe confirmed this GPU/image can execute.</p>`
++    : `<input id="kv" oninput="updateCommand()"><p class="muted">Run a capability probe (Diagnostics page) to restrict this list to hardware-supported values.</p>`;
+   app.innerHTML=`<div class="card"><h2>Deploy</h2>
+   <label>Model<select id="model" onchange="document.getElementById('served').value=this.value;updateCommand()">${options}</select></label>
+   <label>Backend<input id="backend" value="pytorch" oninput="updateCommand()"></label>
+@@ -56,35 +82,49 @@ function deploy(){
+   <label>Host-published port<input id="port" type="number" value="8000" oninput="updateCommand()"></label>
+   <label>Served model name<input id="served" oninput="updateCommand()"></label>
+   <label>Max batch size<input id="mb" type="number" oninput="updateCommand()"></label>
+-  <label>Max sequence length<input id="ms" type="number" oninput="updateCommand()"></label>
+-  <label>Tensor parallel size<input id="tp" type="number" value="1" min="1" oninput="updateCommand()"></label>
+-  <label>KV cache dtype<input id="kv" oninput="updateCommand()"></label>
++  <label>Max input/context length<input id="ms" type="number" oninput="updateCommand()"></label>
++  <label>Max output tokens <span class="muted">(VRAM estimate only — not a trtllm-serve flag)</span><input id="mot" type="number" oninput="updateCommand()"></label>
++  <label>KV cache dtype${kvField}</label>
+   <label>Free GPU memory fraction<input id="fg" type="number" step="0.01" oninput="updateCommand()"></label>
+-  <details><summary>Advanced</summary>
+-    <label>Pipeline parallel size<input id="pp" type="number" value="1" oninput="updateCommand()"></label>
+-    <label>Context parallel size<input id="cp" type="number" value="1" oninput="updateCommand()"></label>
+-    <label>MoE expert parallel size<input id="ep" type="number" value="1" oninput="updateCommand()"></label>
++  ${showParallelism?`<details open><summary>Parallelism (${parallelMax} GPUs detected)</summary>
++    <label>Tensor parallel size<input id="tp" type="number" value="1" min="1" max="${parallelMax}" oninput="updateCommand()"></label>
++    <label>Pipeline parallel size<input id="pp" type="number" value="1" min="1" max="${parallelMax}" oninput="updateCommand()"></label>
++    <label>Context parallel size<input id="cp" type="number" value="1" min="1" max="${parallelMax}" oninput="updateCommand()"></label>
++    <label>MoE expert parallel size<input id="ep" type="number" value="1" min="1" max="${parallelMax}" oninput="updateCommand()"></label>
+     <label>GPUs per node<input id="gpn" type="number" oninput="updateCommand()"></label>
+-  </details>
++  </details>`:`<p class="muted">Parallelism controls hidden — ${parallelMax==null?"run a capability probe to detect GPU count":"only "+parallelMax+" GPU detected, tensor/pipeline/context/expert parallelism need >1"}.</p>`}
+   <details><summary>Expert</summary>
+     <label>Custom module dirs<input id="cmdirs" oninput="updateCommand()"></label>
+     <label><input id="trc" type="checkbox" onchange="updateCommand()"> trust_remote_code</label>
+     <label>Unsafe confirmation<input id="ack" placeholder="Type ENABLE UNSAFE" oninput="updateCommand()"></label>
+     <label>Extra flags JSON<textarea id="extra" oninput="updateCommand()">{}</textarea></label>
+   </details>
+-  <h3>Generated command</h3><pre id="command"></pre><button onclick="launch()">Deploy</button><div id="deploymsg"></div></div>`;
++  <h3>Generated command</h3><pre id="command"></pre>
++  <button onclick="runPreflight()">Run Pre-flight Check</button>
++  <button onclick="launch()">Deploy</button>
++  <div id="preflight"></div>
++  <div id="deploymsg"></div></div>`;
+   if(state.models[0]){document.getElementById("model").value=state.models[0].name;document.getElementById("served").value=state.models[0].name;}
+   updateCommand();
+ }
+ function configFromForm(){
+   let extra={}; try{extra=JSON.parse(document.getElementById("extra").value||"{}")}catch{}
+-  const num=id=>{const v=document.getElementById(id).value;return v===""?null:Number(v)};
++  const num=id=>{const el=document.getElementById(id);if(!el)return null;const v=el.value;return v===""?null:Number(v)};
+   return {model_name:document.getElementById("model").value,backend:document.getElementById("backend").value,host:document.getElementById("host").value,port:Number(document.getElementById("port").value),
+-    served_model_name:document.getElementById("served").value,max_batch_size:num("mb"),max_seq_len:num("ms"),tensor_parallel_size:num("tp")||1,
++    served_model_name:document.getElementById("served").value,max_batch_size:num("mb"),max_seq_len:num("ms"),max_output_tokens:num("mot"),tensor_parallel_size:num("tp")||1,
+     pipeline_parallel_size:num("pp")||1,context_parallel_size:num("cp")||1,moe_expert_parallel_size:num("ep")||1,gpus_per_node:num("gpn"),
+     kv_cache_dtype:document.getElementById("kv").value||null,free_gpu_memory_fraction:num("fg"),trust_remote_code:document.getElementById("trc").checked,
+     custom_module_dirs:document.getElementById("cmdirs").value||null,unsafe_ack:document.getElementById("ack").value||null,extra_flags:extra};
+ }
++async function runPreflight(){
++  const el=document.getElementById("preflight"); el.innerHTML="<p class=\"muted\">Running pre-flight checks…</p>";
++  try{
++    const r=await api("/api/deployments/preflight",{method:"POST",body:JSON.stringify(configFromForm())});
++    const rows=r.checks.map(c=>`<p class="${c.status==='pass'?'success':c.status==='warn'?'warn':'error'}">${c.status==='pass'?'✓':c.status==='warn'?'⚠':'✗'} <b>${esc(c.name)}</b> — ${esc(c.detail)}</p>`).join("");
++    const vram=r.vram_estimate?`<p class="muted">VRAM estimate (heuristic, approximate — not exact): ~${esc(String(r.vram_estimate.total_estimated_mb))}MB total (${esc(String(r.vram_estimate.weights_mb))}MB weights + ${esc(String(r.vram_estimate.kv_cache_mb))}MB KV cache, method: ${esc(r.vram_estimate.method)})</p>`:"";
++    el.innerHTML=`<div class="card">${r.feasible?'<p class="success"><b>Configuration appears feasible.</b></p>':'<p class="error"><b>Configuration has blocking issues — see below.</b></p>'}${rows}${vram}<p class="muted">Advisory only — the real Docker/GPU/trtllm-serve stack is the final authority.</p></div>`;
++  }catch(e){el.innerHTML=`<p class="error">${esc(e.message)}</p>`;}
++}
+ function updateCommand(){
+   const el=document.getElementById("command"); if(!el)return;
+   const c=configFromForm(); const model=state.models.find(m=>m.name===c.model_name);
+diff --git a/frontend/style.css b/frontend/style.css
+index 5714c6a..7a181e4 100644
+--- a/frontend/style.css
++++ b/frontend/style.css
+@@ -1 +1 @@
+-body{font-family:system-ui,sans-serif;max-width:1200px;margin:0 auto;padding:20px;background:#f5f5f5;color:#222}header{background:white;padding:16px;border-radius:10px;margin-bottom:16px}nav{display:flex;flex-wrap:wrap;gap:6px}button{padding:8px 12px;border:1px solid #bbb;border-radius:6px;background:white;cursor:pointer}button:hover{background:#eee}.card{background:white;padding:16px;border-radius:10px;margin-bottom:12px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}label{display:block;margin:8px 0}input,select,textarea{width:100%;box-sizing:border-box;padding:8px;margin-top:4px}textarea{min-height:100px;font-family:monospace}.danger{background:#fee;border:2px solid #c00;padding:12px;margin:10px 0}.muted{color:#666}pre{white-space:pre-wrap;overflow:auto;background:#111;color:#eee;padding:12px;border-radius:8px}table{width:100%;border-collapse:collapse;background:white}th,td{padding:8px;border-bottom:1px solid #ddd;text-align:left}.bar{height:18px;background:#ddd;border-radius:9px;overflow:hidden}.bar>div{height:100%;background:#777}.success{color:green}.error{color:#b00}details{background:white;padding:10px;border-radius:8px;margin:10px 0}
++body{font-family:system-ui,sans-serif;max-width:1200px;margin:0 auto;padding:20px;background:#f5f5f5;color:#222}header{background:white;padding:16px;border-radius:10px;margin-bottom:16px}nav{display:flex;flex-wrap:wrap;gap:6px}button{padding:8px 12px;border:1px solid #bbb;border-radius:6px;background:white;cursor:pointer}button:hover{background:#eee}.card{background:white;padding:16px;border-radius:10px;margin-bottom:12px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}label{display:block;margin:8px 0}input,select,textarea{width:100%;box-sizing:border-box;padding:8px;margin-top:4px}textarea{min-height:100px;font-family:monospace}.danger{background:#fee;border:2px solid #c00;padding:12px;margin:10px 0}.muted{color:#666}pre{white-space:pre-wrap;overflow:auto;background:#111;color:#eee;padding:12px;border-radius:8px}table{width:100%;border-collapse:collapse;background:white}th,td{padding:8px;border-bottom:1px solid #ddd;text-align:left}.bar{height:18px;background:#ddd;border-radius:9px;overflow:hidden}.bar>div{height:100%;background:#777}.success{color:green}.error{color:#b00}.warn{color:#b60}details{background:white;padding:10px;border-radius:8px;margin:10px 0}

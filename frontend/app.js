@@ -28,16 +28,31 @@ async function show(page){
   else if(page==="profiles") profiles();
   else if(page==="diagnostics") diagnostics();
 }
+function capParsed(){return state.caps?.manifest?.parsed || null;}
+function precisionBadges(precision){
+  if(!precision) return "";
+  return Object.entries(precision).map(([k,v])=>{
+    const sup=v.supported;
+    const cls=sup===true?"success":sup===false?"muted":"warn";
+    const label=sup===true?"available":sup===false?"unavailable (hardware)":"unknown";
+    return `<span class="${cls}" title="${esc(v.note||"")}">${k.toUpperCase()}: ${label}</span>`;
+  }).join(" &nbsp; ");
+}
 function dashboard(){
   const c=state.caps;
   const g=c?.manifest?.commands?.[0]?.stdout || "";
+  const parsed=capParsed();
+  const gpu=parsed?.gpu?.gpus?.[0];
   app.innerHTML=`<div class="card"><h2>Dashboard</h2>
     <p>Control panel: <b>${esc(location.origin)}</b></p>
     <p>Model directory: <code>${esc(state.settings.model_dir)}</code></p>
     <p>Data directory: <code>${esc(state.settings.data_dir)}</code></p>
     ${state.settings.path_warnings?.length?`<div class="danger">${state.settings.path_warnings.map(esc).join("<br>")}</div>`:""}
     <h3>Diagnostics</h3>
-    ${c.status==="not_yet_probed"?`<p class="muted">Not yet probed.</p>`:`<p class="success">Last probe: ${esc(c.manifest.probed_at)}</p><pre>${esc(g)}</pre>`}
+    ${c.status==="not_yet_probed"?`<p class="muted">Not yet probed — capability-aware checks (precision, kv_cache_dtype options, VRAM pre-flight) stay disabled until you probe once.</p>`:`<p class="success">Last probe: ${esc(c.manifest.probed_at)}</p>`}
+    ${gpu?`<p><b>${esc(gpu.name)}</b> — ${esc(String(gpu.vram_total_mb))}MB total, ${esc(String(gpu.vram_free_mb))}MB free at probe time, compute capability ${esc(String(gpu.compute_capability))}, ${esc(String(parsed.gpu.count))} GPU(s) detected</p>
+    <p>${precisionBadges(parsed.precision)}</p>`:""}
+    ${c.status!=="not_yet_probed"?`<pre>${esc(g)}</pre>`:""}
     <button onclick="show('diagnostics')">Run Diagnostics</button>
   </div>
   <div class="card"><h3>Deployments</h3>${state.deployments.map(d=>`<p><b>${esc(d.deployment_id)}</b> — ${esc(d.status)} — port ${esc(d.port)}</p>`).join("")||"None"}</div>`;
@@ -49,6 +64,17 @@ function models(){
 function prepareDeploy(name){show("deploy").then(()=>{document.getElementById("model").value=name; document.getElementById("served").value=name; updateCommand();});}
 function deploy(){
   const options=state.models.map(m=>`<option>${esc(m.name)}</option>`).join("");
+  const parsed=capParsed();
+  const kvOptions=parsed?.kv_cache_dtype_options||null;
+  const parallelMax=parsed?.parallel_max;
+  // Capability-driven: parallelism dimensions are moot with <=1 detected GPU
+  // (or unknown, if never probed) -- hide the controls rather than show
+  // disabled/default-1 selectors nobody on this hardware can use.
+  const showParallelism = parallelMax!=null && parallelMax>1;
+  const kvField = kvOptions
+    ? `<select id="kv" onchange="updateCommand()"><option value="">(unset)</option>${kvOptions.map(o=>`<option>${esc(o)}</option>`).join("")}</select>
+       <p class="muted">Options limited to what the last capability probe confirmed this GPU/image can execute.</p>`
+    : `<input id="kv" oninput="updateCommand()"><p class="muted">Run a capability probe (Diagnostics page) to restrict this list to hardware-supported values.</p>`;
   app.innerHTML=`<div class="card"><h2>Deploy</h2>
   <label>Model<select id="model" onchange="document.getElementById('served').value=this.value;updateCommand()">${options}</select></label>
   <label>Backend<input id="backend" value="pytorch" oninput="updateCommand()"></label>
@@ -56,34 +82,48 @@ function deploy(){
   <label>Host-published port<input id="port" type="number" value="8000" oninput="updateCommand()"></label>
   <label>Served model name<input id="served" oninput="updateCommand()"></label>
   <label>Max batch size<input id="mb" type="number" oninput="updateCommand()"></label>
-  <label>Max sequence length<input id="ms" type="number" oninput="updateCommand()"></label>
-  <label>Tensor parallel size<input id="tp" type="number" value="1" min="1" oninput="updateCommand()"></label>
-  <label>KV cache dtype<input id="kv" oninput="updateCommand()"></label>
+  <label>Max input/context length<input id="ms" type="number" oninput="updateCommand()"></label>
+  <label>Max output tokens <span class="muted">(VRAM estimate only — not a trtllm-serve flag)</span><input id="mot" type="number" oninput="updateCommand()"></label>
+  <label>KV cache dtype${kvField}</label>
   <label>Free GPU memory fraction<input id="fg" type="number" step="0.01" oninput="updateCommand()"></label>
-  <details><summary>Advanced</summary>
-    <label>Pipeline parallel size<input id="pp" type="number" value="1" oninput="updateCommand()"></label>
-    <label>Context parallel size<input id="cp" type="number" value="1" oninput="updateCommand()"></label>
-    <label>MoE expert parallel size<input id="ep" type="number" value="1" oninput="updateCommand()"></label>
+  ${showParallelism?`<details open><summary>Parallelism (${parallelMax} GPUs detected)</summary>
+    <label>Tensor parallel size<input id="tp" type="number" value="1" min="1" max="${parallelMax}" oninput="updateCommand()"></label>
+    <label>Pipeline parallel size<input id="pp" type="number" value="1" min="1" max="${parallelMax}" oninput="updateCommand()"></label>
+    <label>Context parallel size<input id="cp" type="number" value="1" min="1" max="${parallelMax}" oninput="updateCommand()"></label>
+    <label>MoE expert parallel size<input id="ep" type="number" value="1" min="1" max="${parallelMax}" oninput="updateCommand()"></label>
     <label>GPUs per node<input id="gpn" type="number" oninput="updateCommand()"></label>
-  </details>
+  </details>`:`<p class="muted">Parallelism controls hidden — ${parallelMax==null?"run a capability probe to detect GPU count":"only "+parallelMax+" GPU detected, tensor/pipeline/context/expert parallelism need >1"}.</p>`}
   <details><summary>Expert</summary>
     <label>Custom module dirs<input id="cmdirs" oninput="updateCommand()"></label>
     <label><input id="trc" type="checkbox" onchange="updateCommand()"> trust_remote_code</label>
     <label>Unsafe confirmation<input id="ack" placeholder="Type ENABLE UNSAFE" oninput="updateCommand()"></label>
     <label>Extra flags JSON<textarea id="extra" oninput="updateCommand()">{}</textarea></label>
   </details>
-  <h3>Generated command</h3><pre id="command"></pre><button onclick="launch()">Deploy</button><div id="deploymsg"></div></div>`;
+  <h3>Generated command</h3><pre id="command"></pre>
+  <button onclick="runPreflight()">Run Pre-flight Check</button>
+  <button onclick="launch()">Deploy</button>
+  <div id="preflight"></div>
+  <div id="deploymsg"></div></div>`;
   if(state.models[0]){document.getElementById("model").value=state.models[0].name;document.getElementById("served").value=state.models[0].name;}
   updateCommand();
 }
 function configFromForm(){
   let extra={}; try{extra=JSON.parse(document.getElementById("extra").value||"{}")}catch{}
-  const num=id=>{const v=document.getElementById(id).value;return v===""?null:Number(v)};
+  const num=id=>{const el=document.getElementById(id);if(!el)return null;const v=el.value;return v===""?null:Number(v)};
   return {model_name:document.getElementById("model").value,backend:document.getElementById("backend").value,host:document.getElementById("host").value,port:Number(document.getElementById("port").value),
-    served_model_name:document.getElementById("served").value,max_batch_size:num("mb"),max_seq_len:num("ms"),tensor_parallel_size:num("tp")||1,
+    served_model_name:document.getElementById("served").value,max_batch_size:num("mb"),max_seq_len:num("ms"),max_output_tokens:num("mot"),tensor_parallel_size:num("tp")||1,
     pipeline_parallel_size:num("pp")||1,context_parallel_size:num("cp")||1,moe_expert_parallel_size:num("ep")||1,gpus_per_node:num("gpn"),
     kv_cache_dtype:document.getElementById("kv").value||null,free_gpu_memory_fraction:num("fg"),trust_remote_code:document.getElementById("trc").checked,
     custom_module_dirs:document.getElementById("cmdirs").value||null,unsafe_ack:document.getElementById("ack").value||null,extra_flags:extra};
+}
+async function runPreflight(){
+  const el=document.getElementById("preflight"); el.innerHTML="<p class=\"muted\">Running pre-flight checks…</p>";
+  try{
+    const r=await api("/api/deployments/preflight",{method:"POST",body:JSON.stringify(configFromForm())});
+    const rows=r.checks.map(c=>`<p class="${c.status==='pass'?'success':c.status==='warn'?'warn':'error'}">${c.status==='pass'?'✓':c.status==='warn'?'⚠':'✗'} <b>${esc(c.name)}</b> — ${esc(c.detail)}</p>`).join("");
+    const vram=r.vram_estimate?`<p class="muted">VRAM estimate (heuristic, approximate — not exact): ~${esc(String(r.vram_estimate.total_estimated_mb))}MB total (${esc(String(r.vram_estimate.weights_mb))}MB weights + ${esc(String(r.vram_estimate.kv_cache_mb))}MB KV cache, method: ${esc(r.vram_estimate.method)})</p>`:"";
+    el.innerHTML=`<div class="card">${r.feasible?'<p class="success"><b>Configuration appears feasible.</b></p>':'<p class="error"><b>Configuration has blocking issues — see below.</b></p>'}${rows}${vram}<p class="muted">Advisory only — the real Docker/GPU/trtllm-serve stack is the final authority.</p></div>`;
+  }catch(e){el.innerHTML=`<p class="error">${esc(e.message)}</p>`;}
 }
 function updateCommand(){
   const el=document.getElementById("command"); if(!el)return;
