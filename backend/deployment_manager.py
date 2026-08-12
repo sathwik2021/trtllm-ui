@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import socket
 import subprocess
 import threading
 import time
-import uuid
 from typing import Any
 from urllib.request import Request, urlopen
 from urllib.error import URLError
@@ -18,7 +18,18 @@ from .model_manager import get_model
 from .settings import AppSettings
 
 
+def _slugify(text: str) -> str:
+    slug = re.sub(r"[^a-z0-9-]+", "-", text.lower()).strip("-")
+    return slug[:40] or "deployment"
+
+
 class DeploymentConfig(BaseModel):
+    # Optional stable identity for this deployment. If omitted, derived from
+    # model_name. Two deploy calls with the same resulting deployment_id map
+    # to the SAME container name, which is what makes create/start/reuse
+    # (see start_deployment) possible instead of minting a new container
+    # every time.
+    name: str | None = None
     model_name: str
     backend: str = "pytorch"
     host: str = "0.0.0.0"
@@ -56,6 +67,70 @@ def _docker_inspect(name: str) -> dict[str, Any] | None:
         return None
 
 
+def _extract_port(info: dict[str, Any] | None) -> int | None:
+    """Recover the published host port from `docker inspect` output.
+
+    Fixes the known reconcile() gap where rediscovered containers had
+    port set to None, silently disabling port-collision checks after a
+    restart.
+    """
+    if not info:
+        return None
+    try:
+        ports = info.get("NetworkSettings", {}).get("Ports") or {}
+        for _container_port, bindings in ports.items():
+            if not bindings:
+                continue
+            host_port = bindings[0].get("HostPort")
+            if host_port:
+                return int(host_port)
+    except Exception:
+        pass
+    # Fallback: parse "--port <N>" out of the container's launch command.
+    cmd = (info.get("Config", {}) or {}).get("Cmd") or []
+    for i, arg in enumerate(cmd):
+        if arg == "--port" and i + 1 < len(cmd):
+            try:
+                return int(cmd[i + 1])
+            except ValueError:
+                pass
+    return None
+
+
+def _reconstruct_config(info: dict[str, Any] | None) -> dict[str, Any]:
+    """Best-effort reconstruction of a deployment's config from
+    `docker inspect`, for containers discovered after an app restart
+    rather than started by this process. This is NOT a full
+    DeploymentConfig -- only what's actually recoverable from the
+    container's launch args. Callers should treat this as informational,
+    not authoritative.
+    """
+    if not info:
+        return {}
+    cmd = (info.get("Config", {}) or {}).get("Cmd") or []
+    parsed: dict[str, Any] = {}
+    i = 0
+    while i < len(cmd):
+        tok = cmd[i]
+        if tok.startswith("--"):
+            key = tok.lstrip("-")
+            if i + 1 < len(cmd) and not cmd[i + 1].startswith("--"):
+                parsed[key] = cmd[i + 1]
+                i += 2
+            else:
+                parsed[key] = True
+                i += 1
+        else:
+            i += 1
+    return {
+        "backend": parsed.get("backend"),
+        "served_model_name": parsed.get("served_model_name"),
+        "image": info.get("Config", {}).get("Image"),
+        "reconstructed": True,
+        "reconstructed_note": "Best-effort, parsed from docker inspect Config.Cmd -- not the original request payload.",
+    }
+
+
 def _port_free(port: int) -> bool:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -73,11 +148,17 @@ def _flag_name(key: str) -> str:
 
 def build_command(settings: AppSettings, config: DeploymentConfig, deployment_id: str | None = None) -> tuple[list[str], list[str]]:
     get_model(settings, config.model_name)
+    deployment_id = deployment_id or _slugify(config.name or config.model_name)
+    container_name = f"trtllm-ui-{deployment_id}"
+
     if not (1024 <= config.port <= 65535):
         raise ValueError("port must be between 1024 and 65535")
     with _lock:
-        occupied = {d["port"] for d in _deployments.values()}
-    if config.port in occupied or not _port_free(config.port):
+        # Exclude this same deployment_id's own (possibly stale) record from
+        # the collision check -- e.g. a previous container with this name was
+        # removed outside the app, but the in-memory record wasn't cleared.
+        occupied = {did: d["port"] for did, d in _deployments.items() if did != deployment_id}
+    if config.port in occupied.values() or not _port_free(config.port):
         raise ValueError(f"port {config.port} is already in use")
 
     if config.tensor_parallel_size < 1 or config.pipeline_parallel_size < 1 or config.context_parallel_size < 1 or config.moe_expert_parallel_size < 1:
@@ -86,12 +167,10 @@ def build_command(settings: AppSettings, config: DeploymentConfig, deployment_id
     if (config.trust_remote_code or config.custom_module_dirs) and config.unsafe_ack != "ENABLE UNSAFE":
         raise ValueError('Unsafe flags require unsafe_ack == "ENABLE UNSAFE"')
 
-    deployment_id = deployment_id or uuid.uuid4().hex[:12]
-    container_name = f"trtllm-ui-{deployment_id}"
-
     model = get_model(settings, config.model_name)
     cmd = [
         "docker", "run", "-d",
+        "--restart", "unless-stopped",
         "--name", container_name,
         "--gpus", "all",
         "--ipc=host",
@@ -177,8 +256,12 @@ def _watch(deployment_id: str, port: int) -> None:
     _deployments[deployment_id]["reason"] = "startup timeout — check logs"
 
 
-def start_deployment(settings: AppSettings, config: DeploymentConfig) -> dict[str, Any]:
-    deployment_id = uuid.uuid4().hex[:12]
+def create_container(settings: AppSettings, config: DeploymentConfig) -> dict[str, Any]:
+    """Create a brand-new container (`docker run -d`). Only safe to call
+    when no container with the derived name already exists -- callers
+    should go through start_deployment(), which checks this first.
+    """
+    deployment_id = _slugify(config.name or config.model_name)
     cmd, warnings = build_command(settings, config, deployment_id)
     p = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if p.returncode != 0:
@@ -198,13 +281,101 @@ def start_deployment(settings: AppSettings, config: DeploymentConfig) -> dict[st
     return record
 
 
-def reconcile() -> None:
-    p = subprocess.run(
-        ["docker", "ps", "-a", "--filter", "name=trtllm-ui-", "--format", "{{json .}}"],
-        capture_output=True, text=True, check=False
-    )
+def start_container(deployment_id: str, container_name: str, port: int | None, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Start an existing, stopped container (`docker start`), rather than
+    creating a new one. Used when a container with the derived name
+    already exists but isn't running.
+    """
+    p = subprocess.run(["docker", "start", container_name], capture_output=True, text=True, check=False)
     if p.returncode != 0:
+        raise RuntimeError((p.stderr or p.stdout or "docker start failed").strip())
+    with _lock:
+        record = _deployments.get(deployment_id)
+        if record is None:
+            record = {
+                "deployment_id": deployment_id,
+                "container_name": container_name,
+                "config": config or {},
+                "port": port,
+                "status": "starting",
+                "warnings": [],
+                "command": ["docker", "start", container_name],
+            }
+            _deployments[deployment_id] = record
+        else:
+            record["status"] = "starting"
+            if port is not None:
+                record["port"] = port
+    if port:
+        threading.Thread(target=_watch, args=(deployment_id, port), daemon=True).start()
+    return record
+
+
+def start_deployment(settings: AppSettings, config: DeploymentConfig) -> dict[str, Any]:
+    """Orchestrator implementing create / start / reuse:
+
+    - no container by this (derived) name exists  -> create_container (docker run)
+    - container exists, not running                -> start_container  (docker start)
+    - container exists and already running          -> reuse: return its current
+      status rather than attempting another `docker run`, which would fail
+      with "name already in use" and previously wasn't handled at all.
+    """
+    deployment_id = _slugify(config.name or config.model_name)
+    container_name = f"trtllm-ui-{deployment_id}"
+    info = _docker_inspect(container_name)
+
+    if info is None:
+        return create_container(settings, config)
+
+    state = info.get("State", {})
+    if state.get("Running"):
+        port = _extract_port(info)
+        with _lock:
+            record = _deployments.get(deployment_id)
+            if record is None:
+                record = {
+                    "deployment_id": deployment_id,
+                    "container_name": container_name,
+                    "config": config.model_dump(),
+                    "port": port,
+                    "status": "running",
+                    "warnings": [],
+                    "command": [],
+                }
+                _deployments[deployment_id] = record
+            reused = dict(record)
+        reused["status"] = "running"
+        reused["warnings"] = list(reused.get("warnings", [])) + [
+            f"Container '{container_name}' was already running -- reused it instead of creating a new one."
+        ]
+        return reused
+
+    port = _extract_port(info) or config.port
+    return start_container(deployment_id, container_name, port, config.model_dump())
+
+
+def reconcile(retries: int = 3, retry_delay: float = 3.0) -> None:
+    """Discover existing trtllm-ui-* containers on process startup and
+    rebuild the in-memory deployment table from them.
+
+    Retried a few times (default 3, 3s apart) because right after a fresh
+    Windows boot, Docker Desktop / the WSL2 Docker daemon may not have
+    finished starting yet -- a single failed `docker ps` at t=0 should not
+    be treated as "no deployments exist".
+    """
+    p = None
+    for attempt in range(retries):
+        p = subprocess.run(
+            ["docker", "ps", "-a", "--filter", "name=trtllm-ui-", "--format", "{{json .}}"],
+            capture_output=True, text=True, check=False
+        )
+        if p.returncode == 0:
+            break
+        if attempt < retries - 1:
+            time.sleep(retry_delay)
+    if p is None or p.returncode != 0:
         return
+
     for line in p.stdout.splitlines():
         try:
             item = json.loads(line)
@@ -214,15 +385,27 @@ def reconcile() -> None:
         if not name.startswith("trtllm-ui-"):
             continue
         deployment_id = name.removeprefix("trtllm-ui-")
+
+        with _lock:
+            if deployment_id in _deployments:
+                continue  # already tracked this process lifetime
+
+        info = _docker_inspect(name)
+        port = _extract_port(info)
+        reconstructed = _reconstruct_config(info)
+        running = item.get("State") == "running"
         with _lock:
             _deployments.setdefault(deployment_id, {
                 "deployment_id": deployment_id,
                 "container_name": name,
-                "port": None,
-                "config": {},
-                "status": "running" if item.get("State") == "running" else "exited",
-                "warnings": [],
-                "command": [],
+                "port": port,
+                "config": reconstructed,
+                "status": "running" if running else "exited",
+                "warnings": [
+                    "Rediscovered after restart -- config reconstructed from docker inspect, "
+                    "not the original request. Port recovered from container's published bindings."
+                ],
+                "command": [] if running else ["docker", "start", name],
             })
 
 
@@ -260,7 +443,17 @@ def log_stream(deployment_id: str):
     name = record["container_name"]
     p = subprocess.Popen(
         ["docker", "logs", "--tail", "2000", "-f", name],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        # Docker's log output is UTF-8 regardless of host OS (it often
+        # contains Unicode box-drawing / block characters from progress
+        # bars). Without an explicit encoding, Python's text mode falls
+        # back to the platform's default locale encoding -- on Windows
+        # that's typically cp1252, not UTF-8 -- and raises
+        # UnicodeDecodeError the first time a non-cp1252 byte shows up
+        # (e.g. the "█" characters in trtllm-serve's weight-loading
+        # progress bars). errors="replace" swaps undecodable bytes for
+        # "�" instead of crashing the whole log stream.
+        text=True, encoding="utf-8", errors="replace",
     )
     try:
         assert p.stdout is not None

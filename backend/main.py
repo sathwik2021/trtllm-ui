@@ -22,7 +22,24 @@ app.mount("/static", StaticFiles(directory=Path(__file__).parent.parent / "front
 @app.on_event("startup")
 def startup():
     settings.materialize_dirs()
-    deployment_manager.reconcile()
+
+    # Cold-boot handling: right after a Windows reboot, WSL2's GPU
+    # passthrough and/or the Docker daemon may not be ready the instant
+    # this process starts. Retry both a few times rather than failing
+    # permanently on the first check and reporting "unavailable" for the
+    # rest of the process's life.
+    gpu_result = gpu_monitor.poll_with_retry(attempts=3, delay=3.0)
+    if "error" in gpu_result:
+        print(f"[startup] GPU still unavailable after retries: {gpu_result['error']}")
+    else:
+        print(f"[startup] GPU check OK: {len(gpu_result.get('gpus', []))} GPU(s) detected")
+
+    deployment_manager.reconcile(retries=3, retry_delay=3.0)
+    try:
+        found = len(deployment_manager.list_deployments())
+    except Exception as exc:
+        found = f"unknown ({exc})"
+    print(f"[startup] reconcile() found {found} existing deployment(s)")
 
 
 @app.get("/")
