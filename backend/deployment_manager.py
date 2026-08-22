@@ -247,7 +247,13 @@ def _quote_cmd(cmd: list[str]) -> str:
 
 
 def _watch(deployment_id: str, port: int) -> None:
-    deadline = time.time() + 90
+    # 90s was too tight: the confirmed real-world boot for even a 1.5B
+    # model on this hardware (cold safetensors prefetch + CUDA graph
+    # warmup across 34 batch sizes) has taken up to ~160s in testing.
+    # 300s gives headroom without waiting forever on a genuinely stuck
+    # container -- get_status()'s later docker-level check is what
+    # actually corrects a stale timeout once the container comes up late.
+    deadline = time.time() + 300
     while time.time() < deadline:
         info = _docker_inspect(_deployments[deployment_id]["container_name"])
         if info is None:
@@ -263,6 +269,7 @@ def _watch(deployment_id: str, port: int) -> None:
             with urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=2) as r:
                 if r.status == 200:
                     _deployments[deployment_id]["status"] = "ready"
+                    _deployments[deployment_id].pop("reason", None)
                     return
         except Exception:
             pass
@@ -435,7 +442,25 @@ def get_status(deployment_id: str) -> dict[str, Any]:
         return record
     state = info.get("State", {})
     status = state.get("Status", "unknown")
-    record["status"] = "running" if status == "running" else status
+    if status == "running":
+        # Docker-level "running" only means the process didn't crash --
+        # it does NOT mean trtllm-serve has finished loading and is
+        # actually answering requests. A prior _watch() timeout can have
+        # stamped status=error/reason=timeout while the container kept
+        # loading in the background (confirmed: real boot times up to
+        # ~160s exceed watch's old 90s window). Re-check the real
+        # endpoint here so a since-recovered deployment reports "ready"
+        # with no stale reason attached, rather than a permanently
+        # confusing "running" + leftover timeout message.
+        try:
+            with urlopen(f"http://127.0.0.1:{record['port']}/v1/models", timeout=2) as r:
+                record["status"] = "ready" if r.status == 200 else "running"
+        except Exception:
+            record["status"] = "running"
+        if record["status"] in ("ready", "running"):
+            record.pop("reason", None)
+    else:
+        record["status"] = status
     return record
 
 
@@ -542,11 +567,20 @@ def preflight(settings: AppSettings, config: DeploymentConfig) -> dict[str, Any]
     # 5. port availability (read-only check; excludes this deployment's own record, same as build_command)
     deployment_id = _slugify(config.name or config.model_name)
     with _lock:
+        existing = _deployments.get(deployment_id)
         occupied = {did: d["port"] for did, d in _deployments.items() if did != deployment_id}
-    port_in_range = 1024 <= config.port <= 65535
-    port_ok = port_in_range and config.port not in occupied.values() and _port_free(config.port)
-    add("port", "pass" if port_ok else "fail",
-        f"port {config.port} is free" if port_ok else f"port {config.port} is out of range or already in use")
+    if existing is not None and existing.get("port") == config.port:
+        # This exact deployment already owns this port -- deploying will
+        # hit the reuse path (docker start on the existing container, or
+        # a no-op if already running), not a fresh `docker run`. The raw
+        # OS-level socket check would correctly see the port as bound and
+        # wrongly report a collision against ourselves.
+        add("port", "pass", f"port {config.port} is already held by this deployment (will be reused, not recreated)")
+    else:
+        port_in_range = 1024 <= config.port <= 65535
+        port_ok = port_in_range and config.port not in occupied.values() and _port_free(config.port)
+        add("port", "pass" if port_ok else "fail",
+            f"port {config.port} is free" if port_ok else f"port {config.port} is out of range or already in use")
 
     # 6. VRAM estimate -- heuristic, see vram_estimator module docstring.
     vram = None

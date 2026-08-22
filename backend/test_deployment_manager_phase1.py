@@ -49,7 +49,8 @@ class Phase1Tests(unittest.TestCase):
     # ---- item 3: --restart unless-stopped, no --rm ----
     def test_restart_policy_present_and_no_rm(self):
         with patch.object(dm, "get_model", return_value=FAKE_MODEL), \
-             patch.object(dm, "cached_manifest", return_value=None):
+             patch.object(dm, "cached_manifest", return_value=None), \
+             patch.object(dm, "_port_free", return_value=True):
             cmd, _ = dm.build_command(self.settings, DeploymentConfig(model_name="Qwen2.5-1.5B-Instruct", port=8000))
         self.assertIn("--restart", cmd)
         self.assertEqual(cmd[cmd.index("--restart") + 1], "unless-stopped")
@@ -60,6 +61,7 @@ class Phase1Tests(unittest.TestCase):
         with patch.object(dm, "get_model", return_value=FAKE_MODEL), \
              patch.object(dm, "cached_manifest", return_value=None), \
              patch.object(dm, "_docker_inspect", return_value=None), \
+             patch.object(dm, "_port_free", return_value=True), \
              patch("subprocess.run") as run, \
              patch.object(dm.threading, "Thread") as thread:
             run.return_value = MagicMock(returncode=0, stdout="containerid123", stderr="")

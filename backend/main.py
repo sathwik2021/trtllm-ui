@@ -9,7 +9,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import capability_probe, config_manager, deployment_manager, gpu_monitor, model_manager, storage_manager
+from . import benchmark_manager, capability_probe, config_manager, deployment_manager, gpu_monitor, model_manager, storage_manager
 from .deployment_manager import DeploymentConfig
 from .settings import AppSettings, load_settings, save_settings
 
@@ -166,6 +166,62 @@ async def api_gpu_stream():
             yield f"data: {json.dumps(gpu_monitor.poll())}\n\n"
             await asyncio.sleep(2)
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+@app.post("/api/benchmarks")
+def api_start_benchmark(req: benchmark_manager.BenchmarkRequest):
+    host = req.host
+    port = req.port
+    served_model_name = req.served_model_name
+
+    if req.deployment_id:
+        try:
+            record = deployment_manager.get_status(req.deployment_id)
+        except KeyError:
+            raise HTTPException(404, f"deployment not found: {req.deployment_id}")
+        host = host or settings.host
+        port = port or record["port"]
+        served_model_name = served_model_name or (record.get("config") or {}).get("served_model_name")
+
+    if not (host and port and served_model_name):
+        raise HTTPException(
+            400,
+            "need either deployment_id, or explicit host+port+served_model_name",
+        )
+
+    try:
+        return benchmark_manager.start_benchmark_job(
+            settings, host=host, port=port, served_model_name=served_model_name,
+            request_count=req.request_count, concurrency=req.concurrency,
+            max_tokens=req.max_tokens, prompt=req.prompt, request_timeout=req.request_timeout,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@app.get("/api/benchmarks/status")
+def api_benchmark_status():
+    job = benchmark_manager.current_job()
+    return job or {"status": "idle"}
+
+
+@app.get("/api/benchmarks")
+def api_list_benchmarks():
+    return benchmark_manager.list_results(settings)
+
+
+@app.get("/api/benchmarks/{benchmark_id}")
+def api_get_benchmark(benchmark_id: str):
+    try:
+        return benchmark_manager.get_result(settings, benchmark_id)
+    except KeyError:
+        raise HTTPException(404, "benchmark not found")
+
+
+@app.delete("/api/benchmarks/{benchmark_id}")
+def api_delete_benchmark(benchmark_id: str):
+    benchmark_manager.delete_result(settings, benchmark_id)
+    return {"deleted": benchmark_id}
 
 
 @app.get("/api/storage")

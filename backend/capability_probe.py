@@ -45,6 +45,23 @@ def _parse_flags(text: str) -> list[dict[str, Any]]:
     return flags
 
 
+def _enum_choices(serve_flags: list[dict[str, Any]] | None, *flag_names: str) -> list[str] | None:
+    """Extract the real `[choice1|choice2|...]` enum values for a CLI flag
+    from its parsed --help line, e.g. `--kv_cache_dtype [auto|fp8|nvfp4]`.
+    Returns None if the flag wasn't found in this probe (unprobed / flag
+    renamed / removed in a newer image) -- callers must treat that as
+    "unknown", not as "no choices" or a static guess.
+    """
+    if not serve_flags:
+        return None
+    for flag in serve_flags:
+        if flag["name"] in flag_names:
+            m = re.search(r"\[([a-zA-Z0-9_]+(?:\|[a-zA-Z0-9_]+)+)\]", flag["help"])
+            if m:
+                return m.group(1).split("|")
+    return None
+
+
 def _image_tag(image: str) -> str:
     return image.replace("/", "_").replace(":", "_").replace("@", "_")
 
@@ -133,21 +150,36 @@ def _precision_capabilities(compute_cap: float | None) -> dict[str, Any]:
     }
 
 
-def _kv_cache_dtype_options(precision: dict[str, Any]) -> list[str]:
+def _kv_cache_dtype_options(precision: dict[str, Any], serve_flags: list[dict[str, Any]] | None = None) -> list[str]:
     """Which --kv_cache_dtype values are worth offering in the UI.
 
-    "auto" is always safe (lets trtllm-serve pick). Everything else is
-    gated on the same hardware capability table as main-weight precision,
-    since KV-cache quantization uses the same tensor core paths -- e.g.
-    fp8 KV cache is just as hardware-excluded on Ampere as fp8 weights.
+    Confirmed real choices come from the probed `serve --help` text (a
+    build/version can rename or add/drop values -- e.g. this project's
+    confirmed 1.3.0rc22 build only accepts auto|fp8|nvfp4, NOT the
+    generic int8/fp16/bf16 set an earlier version of this function
+    assumed without checking). If serve_flags aren't available yet
+    (not probed), falls back to a conservative static guess -- always
+    prefer the real parsed choices when present.
+
+    Either way, non-"auto" choices are still gated on hardware capability:
+    fp8/nvfp4 in the CLI's own enum doesn't mean THIS gpu can execute them.
     """
-    options = ["auto"]
-    if precision.get("int8", {}).get("supported"):
-        options.append("int8")
-    if precision.get("fp8", {}).get("supported"):
-        options.append("fp8")
-    if precision.get("nvfp4", {}).get("supported"):
-        options.append("fp4")
+    real_choices = _enum_choices(serve_flags, "--kv_cache_dtype")
+    candidates = real_choices if real_choices is not None else ["auto", "fp8", "nvfp4"]
+
+    options = []
+    for c in candidates:
+        c_norm = c.lower()
+        if c_norm == "auto":
+            options.append(c)
+        elif c_norm in ("fp8",) and precision.get("fp8", {}).get("supported"):
+            options.append(c)
+        elif c_norm in ("nvfp4", "fp4") and precision.get("nvfp4", {}).get("supported"):
+            options.append(c)
+        elif c_norm == "int8" and precision.get("int8", {}).get("supported"):
+            # Not present in the confirmed 1.3.0rc22 enum, kept only in case
+            # a different image version's --help genuinely offers it.
+            options.append(c)
     return options
 
 
@@ -199,9 +231,9 @@ def run_probe(settings: AppSettings) -> dict[str, Any]:
             "image_tag": _image_tag(image),
             "commands": results,
             "parsed": {
-                "serve_flags": _parse_flags(
+                "serve_flags": (serve_flags := _parse_flags(
                     results[3]["stdout"] + "\n" + results[3]["stderr"]
-                ),
+                )),
                 "gpu": {
                     "count": gpu_count,
                     "gpus": gpus,
@@ -209,7 +241,7 @@ def run_probe(settings: AppSettings) -> dict[str, Any]:
                     # must not silently assume single-GPU on a failed probe.
                 },
                 "precision": precision,
-                "kv_cache_dtype_options": _kv_cache_dtype_options(precision),
+                "kv_cache_dtype_options": _kv_cache_dtype_options(precision, serve_flags),
                 # Parallelism dimensions are only meaningful with >1 GPU.
                 # max=1 (or unknown if gpu_count is 0/undetected) means the
                 # UI should hide the corresponding selector, not just default it to 1.

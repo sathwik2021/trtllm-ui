@@ -65,18 +65,71 @@ class PrecisionCapabilityTests(unittest.TestCase):
 
 
 class KvCacheDtypeOptionsTests(unittest.TestCase):
-    def test_ampere_offers_int8_not_fp8_or_fp4(self):
-        p = cp._precision_capabilities(8.6)
-        options = cp._kv_cache_dtype_options(p)
-        self.assertIn("auto", options)
-        self.assertIn("int8", options)
-        self.assertNotIn("fp8", options)
-        self.assertNotIn("fp4", options)
+    """Confirmed real trtllm-serve 1.3.0rc22 --kv_cache_dtype choices are
+    [auto|fp8|nvfp4] -- NOT a generic auto/int8/fp16/bf16 set. This was
+    caught by testing against the real image, not assumed up front; these
+    tests lock in the corrected behavior.
+    """
+    REAL_KV_FLAG_LINE = "--kv_cache_dtype [auto|fp8|nvfp4]"
 
-    def test_blackwell_offers_everything(self):
+    def _serve_flags(self, help_line=REAL_KV_FLAG_LINE):
+        return [{"name": "--kv_cache_dtype", "takes_value": True, "help": help_line}]
+
+    def test_ampere_gets_only_auto_since_fp8_and_nvfp4_are_hardware_excluded(self):
+        p = cp._precision_capabilities(8.6)
+        options = cp._kv_cache_dtype_options(p, self._serve_flags())
+        # This is the real, confirmed-correct result for the project's
+        # actual RTX 3050 -- no KV-cache quantization option is usable at
+        # all on this hardware in this build, only "auto".
+        self.assertEqual(options, ["auto"])
+
+    def test_blackwell_gets_fp8_and_nvfp4_from_real_choices(self):
         p = cp._precision_capabilities(10.0)
-        options = cp._kv_cache_dtype_options(p)
-        self.assertEqual(set(options), {"auto", "int8", "fp8", "fp4"})
+        options = cp._kv_cache_dtype_options(p, self._serve_flags())
+        self.assertEqual(set(options), {"auto", "fp8", "nvfp4"})
+
+    def test_ada_gets_fp8_but_not_nvfp4(self):
+        p = cp._precision_capabilities(8.9)
+        options = cp._kv_cache_dtype_options(p, self._serve_flags())
+        self.assertEqual(set(options), {"auto", "fp8"})
+
+    def test_regression_extracts_from_actual_captured_help_text(self):
+        # Verbatim shape of the real `trtllm-serve serve --help` line
+        # (the flag name + choices share a line; the description wraps
+        # onto following lines that _parse_flags does not attach here).
+        real_line = (
+            "--kv_cache_dtype [auto|fp8|nvfp4]                :tag:`prototype` "
+            "KV cache quantization dtype for PyTorch backend."
+        )
+        flags = cp._parse_flags(real_line)
+        p = cp._precision_capabilities(8.6)
+        options = cp._kv_cache_dtype_options(p, flags)
+        self.assertEqual(options, ["auto"])
+
+    def test_no_probe_yet_falls_back_conservatively(self):
+        # No serve_flags at all (never probed) -- must not silently assume
+        # zero options either; falls back to the documented static guess,
+        # still hardware-gated.
+        p = cp._precision_capabilities(8.6)
+        options = cp._kv_cache_dtype_options(p, None)
+        self.assertEqual(options, ["auto"])  # fp8/nvfp4 still excluded by hardware
+
+
+class EnumChoiceExtractionTests(unittest.TestCase):
+    def test_extracts_pipe_separated_choices(self):
+        flags = [{"name": "--backend", "takes_value": True, "help": "--backend [pytorch|_autodeploy]"}]
+        self.assertEqual(cp._enum_choices(flags, "--backend"), ["pytorch", "_autodeploy"])
+
+    def test_missing_flag_returns_none_not_empty_list(self):
+        flags = [{"name": "--other", "takes_value": True, "help": "--other TEXT"}]
+        self.assertIsNone(cp._enum_choices(flags, "--kv_cache_dtype"))
+
+    def test_no_serve_flags_at_all_returns_none(self):
+        self.assertIsNone(cp._enum_choices(None, "--kv_cache_dtype"))
+
+    def test_flag_without_enum_brackets_returns_none(self):
+        flags = [{"name": "--max_batch_size", "takes_value": True, "help": "--max_batch_size INTEGER"}]
+        self.assertIsNone(cp._enum_choices(flags, "--max_batch_size"))
 
 
 class RunProbeManifestShapeTests(unittest.TestCase):

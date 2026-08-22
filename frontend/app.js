@@ -23,6 +23,7 @@ async function show(page){
   else if(page==="models") models();
   else if(page==="deploy") deploy();
   else if(page==="deployments") deployments();
+  else if(page==="benchmark") benchmark();
   else if(page==="chat") chat();
   else if(page==="storage") storage();
   else if(page==="profiles") profiles();
@@ -168,4 +169,70 @@ async function diagnostics(){
 }
 async function runProbe(){await api("/api/capabilities/probe",{method:"POST"});document.getElementById("diag").innerHTML="<p>Probe started. Refresh in a few seconds.</p>";setTimeout(async()=>{state.caps=await api("/api/capabilities");if(state.caps.manifest)renderDiag(state.caps.manifest);},5000);}
 function renderDiag(m){document.getElementById("diag").innerHTML=m.commands.map((c,i)=>`<details open="${i===3}"><summary>${esc(c.argv.join(" "))} — exit ${c.returncode}</summary><pre>${esc((c.stdout||"")+"\n"+(c.stderr||""))}</pre></details>`).join("");}
+
+async function benchmark(){
+  const running=state.deployments.filter(d=>d.status==="running"||d.status==="ready");
+  const history=await api("/api/benchmarks");
+  app.innerHTML=`<div class="card"><h2>Benchmark</h2>
+  <label>Deployment<select id="bdep">${running.map(d=>`<option value="${d.port}" data-model="${esc((d.config||{}).served_model_name||d.deployment_id)}">${esc(d.deployment_id)}:${d.port}</option>`).join("")||`<option value="">No running deployments</option>`}</select></label>
+  <label>Request count<input id="brc" type="number" value="20"></label>
+  <label>Concurrency<input id="bcc" type="number" value="1"></label>
+  <label>Max tokens per request<input id="bmt" type="number" value="256"></label>
+  <label>Prompt (optional)<textarea id="bprompt" placeholder="Leave blank for default prompt"></textarea></label>
+  <button onclick="runBenchmark()" ${running.length?"":"disabled"}>Run Benchmark</button>
+  <div id="bstatus"></div>
+  <div id="bresult"></div></div>
+  <div class="card"><h3>Past runs</h3><div id="bhistory">${renderBenchmarkHistory(history)}</div></div>`;
+}
+function renderBenchmarkHistory(list){
+  if(!list.length) return "<p class=\"muted\">None yet.</p>";
+  return list.map(r=>`<div class="card">
+    <b>${esc(new Date(r.created_at*1000).toLocaleString())}</b> — ${esc(r.config.served_model_name)} — ${esc(String(r.config.request_count))} req @ concurrency ${esc(String(r.config.concurrency))}<br>
+    throughput: ${r.throughput_tokens_per_s!=null?r.throughput_tokens_per_s.toFixed(1)+" tok/s":"n/a"} — p50: ${r.latency_s.p50!=null?r.latency_s.p50.toFixed(2)+"s":"n/a"} — p95: ${r.latency_s.p95!=null?r.latency_s.p95.toFixed(2)+"s":"n/a"} — failed: ${esc(String(r.requests_failed))}
+    <br><button onclick="viewBenchmark('${esc(r.id)}')">View</button> <button onclick="deleteBenchmark('${esc(r.id)}')">Delete</button>
+  </div>`).join("");
+}
+async function runBenchmark(){
+  const sel=document.getElementById("bdep");
+  const port=Number(sel.value);
+  const served_model_name=sel.selectedOptions[0]?.dataset.model;
+  const body={host:"127.0.0.1",port,served_model_name,
+    request_count:Number(document.getElementById("brc").value),
+    concurrency:Number(document.getElementById("bcc").value),
+    max_tokens:Number(document.getElementById("bmt").value),
+    prompt:document.getElementById("bprompt").value||null};
+  const statusEl=document.getElementById("bstatus");
+  statusEl.innerHTML="<p class=\"muted\">Starting benchmark…</p>";
+  let job;
+  try{job=await api("/api/benchmarks",{method:"POST",body:JSON.stringify(body)});}
+  catch(e){statusEl.innerHTML=`<p class="error">${esc(e.message)}</p>`;return;}
+  statusEl.innerHTML="<p class=\"muted\">Running… this can take a while depending on request count/concurrency.</p>";
+  const poll=async()=>{
+    const s=await api("/api/benchmarks/status");
+    if(s.status==="running"){setTimeout(poll,2000);return;}
+    if(s.status==="error"){statusEl.innerHTML=`<p class="error">Benchmark failed: ${esc(s.error||"unknown error")}</p>`;return;}
+    statusEl.innerHTML="<p class=\"success\">Done.</p>";
+    viewBenchmark(job.id);
+    state_refresh_history();
+  };
+  setTimeout(poll,1500);
+}
+async function state_refresh_history(){const h=await api("/api/benchmarks");const el=document.getElementById("bhistory");if(el)el.innerHTML=renderBenchmarkHistory(h);}
+async function viewBenchmark(id){
+  const r=await api(`/api/benchmarks/${id}`);
+  document.getElementById("bresult").innerHTML=`<div class="card">
+    <h3>Result</h3>
+    <p>Model: ${esc(r.config.served_model_name)} — ${esc(String(r.config.request_count))} requests @ concurrency ${esc(String(r.config.concurrency))}, max_tokens ${esc(String(r.config.max_tokens))}</p>
+    <p>Wall time: ${r.wall_time_s.toFixed(2)}s — Throughput: ${r.throughput_tokens_per_s!=null?r.throughput_tokens_per_s.toFixed(1)+" tok/s":"n/a"}</p>
+    <p>OK: ${esc(String(r.requests_ok))} — Failed: ${esc(String(r.requests_failed))}${r.errors.length?" — e.g. "+esc(r.errors[0]):""}</p>
+    <p>Latency — min: ${fmtS(r.latency_s.min)} avg: ${fmtS(r.latency_s.avg)} p50: ${fmtS(r.latency_s.p50)} p95: ${fmtS(r.latency_s.p95)} max: ${fmtS(r.latency_s.max)}</p>
+    <p>GPU utilization % — min: ${fmtN(r.gpu.utilization_gpu_pct.min)} avg: ${fmtN(r.gpu.utilization_gpu_pct.avg)} max: ${fmtN(r.gpu.utilization_gpu_pct.max)}</p>
+    <p>GPU memory used (MB) — min: ${fmtN(r.gpu.memory_used_mb.min)} avg: ${fmtN(r.gpu.memory_used_mb.avg)} max: ${fmtN(r.gpu.memory_used_mb.max)}</p>
+    <p class="muted">${esc(String(r.gpu.samples_captured))} GPU samples captured during run.</p>
+  </div>`;
+}
+function fmtS(v){return v==null?"n/a":v.toFixed(2)+"s";}
+function fmtN(v){return v==null?"n/a":v.toFixed(1);}
+async function deleteBenchmark(id){await api(`/api/benchmarks/${id}`,{method:"DELETE"});state_refresh_history();}
+
 nav();show("dashboard");
