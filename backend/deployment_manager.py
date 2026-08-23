@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from . import gpu_monitor, vram_estimator
 from .capability_probe import cached_manifest
 from .model_manager import get_model
-from .settings import AppSettings
+from .settings import AppSettings, to_host_path
 
 
 def _slugify(text: str) -> str:
@@ -49,6 +49,17 @@ class DeploymentConfig(BaseModel):
     custom_module_dirs: str | None = None
     unsafe_ack: str | None = None
     extra_flags: dict[str, Any] = Field(default_factory=dict)
+    # Written to a host file and mounted into the container, passed as
+    # --config. This is the ONLY way to reach nested trtllm-serve internals
+    # not exposed as top-level CLI flags (e.g. cuda_graph_config.enable_padding,
+    # scheduler_config.capacity_scheduler_policy -- both visible in this
+    # project's own captured "LLM Args:" log dump, neither settable any
+    # other way). UNCONFIRMED against this exact trtllm-serve build: written
+    # as JSON (not YAML syntax) relying on YAML 1.2 being a JSON superset,
+    # which most YAML parsers (including PyYAML) accept -- but this has not
+    # been tested against trtllm-serve's actual config loader. Treat any
+    # deployment using this field as experimental until verified.
+    extra_llm_api_options: dict[str, Any] | None = None
     # Informational only -- NOT a trtllm-serve CLI flag (no confirmed
     # --max_output_len equivalent exists in this build's serve --help
     # output). Used purely as an input to the VRAM pre-flight estimate
@@ -183,6 +194,18 @@ def build_command(settings: AppSettings, config: DeploymentConfig, deployment_id
             )
 
     model = get_model(settings, config.model_name)
+
+    config_mount: list[str] = []
+    if config.extra_llm_api_options:
+        config_dir = to_host_path(settings.data_dir) / "llm_api_options"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        host_config_path = config_dir / f"{deployment_id}.yaml"
+        # See DeploymentConfig.extra_llm_api_options docstring-comment:
+        # written as JSON, unconfirmed against the real config loader.
+        host_config_path.write_text(json.dumps(config.extra_llm_api_options, indent=2), encoding="utf-8")
+        container_config_path = "/trtllm_extra_config.yaml"
+        config_mount = ["-v", f"{host_config_path}:{container_config_path}:ro"]
+
     cmd = [
         "docker", "run", "-d",
         "--restart", "unless-stopped",
@@ -193,6 +216,7 @@ def build_command(settings: AppSettings, config: DeploymentConfig, deployment_id
         "--ulimit", "stack=67108864",
         "-p", f"127.0.0.1:{config.port}:{config.port}",
         "-v", f"{model['host_path']}:{model['container_path']}:ro",
+        *config_mount,
         settings.docker_image,
         "trtllm-serve", "serve",
         model["container_path"],
@@ -201,6 +225,8 @@ def build_command(settings: AppSettings, config: DeploymentConfig, deployment_id
         "--port", str(config.port),
         "--served_model_name", config.served_model_name or config.model_name,
     ]
+    if config.extra_llm_api_options:
+        cmd.extend(["--config", "/trtllm_extra_config.yaml"])
 
     optional = {
         "max_batch_size": config.max_batch_size,
@@ -431,9 +457,55 @@ def reconcile(retries: int = 3, retry_delay: float = 3.0) -> None:
             })
 
 
+def _rehydrate_if_missing(deployment_id: str) -> dict[str, Any] | None:
+    """On-demand fallback for a deployment_id not in the in-memory table.
+
+    reconcile() only runs once, at process startup, with a finite retry
+    window (see its own docstring) for the Docker-cold-boot race. If that
+    window gets exceeded -- confirmed to happen in practice, not just a
+    theoretical edge case -- the container comes up seconds later but
+    nothing ever looks for it again for the rest of this process's life,
+    and every subsequent lookup (get_status, stop, preflight's port-
+    ownership check) would wrongly report "not found" for a container
+    that is actually running right now.
+
+    This closes that gap by making lookups self-healing on every request:
+    if the id isn't tracked, check Docker directly for the expected
+    container name before giving up. Same reconstruction logic as
+    reconcile(), just triggered lazily instead of only at startup.
+    """
+    with _lock:
+        if deployment_id in _deployments:
+            return _deployments[deployment_id]
+    container_name = f"trtllm-ui-{deployment_id}"
+    info = _docker_inspect(container_name)
+    if info is None:
+        return None
+    port = _extract_port(info)
+    reconstructed = _reconstruct_config(info)
+    running = info.get("State", {}).get("Status") == "running"
+    with _lock:
+        _deployments.setdefault(deployment_id, {
+            "deployment_id": deployment_id,
+            "container_name": container_name,
+            "port": port,
+            "config": reconstructed,
+            "status": "running" if running else "exited",
+            "warnings": [
+                "Rehydrated on-demand -- reconcile() missed this container at startup "
+                "(Docker cold-boot race exceeded its retry window). Config reconstructed "
+                "from docker inspect, not the original request."
+            ],
+            "command": [] if running else ["docker", "start", container_name],
+        })
+        return _deployments[deployment_id]
+
+
 def get_status(deployment_id: str) -> dict[str, Any]:
     with _lock:
         record = _deployments.get(deployment_id)
+    if not record:
+        record = _rehydrate_if_missing(deployment_id)
     if not record:
         raise KeyError(deployment_id)
     info = _docker_inspect(record["container_name"])
@@ -568,6 +640,14 @@ def preflight(settings: AppSettings, config: DeploymentConfig) -> dict[str, Any]
     deployment_id = _slugify(config.name or config.model_name)
     with _lock:
         existing = _deployments.get(deployment_id)
+    if existing is None:
+        # Same cold-boot-race gap _rehydrate_if_missing exists for: don't
+        # trust an empty in-memory table as proof no deployment by this
+        # name exists -- check Docker directly before falling through to
+        # the raw OS port check, which would otherwise wrongly flag this
+        # deployment's OWN port as a collision against itself.
+        existing = _rehydrate_if_missing(deployment_id)
+    with _lock:
         occupied = {did: d["port"] for did, d in _deployments.items() if did != deployment_id}
     if existing is not None and existing.get("port") == config.port:
         # This exact deployment already owns this port -- deploying will

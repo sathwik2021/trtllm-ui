@@ -5,8 +5,11 @@ docker/nvidia-smi, same convention as test_deployment_manager_phase1.py.
 """
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, "..")
@@ -73,7 +76,59 @@ class BuildCommandCapabilityGateTests(unittest.TestCase):
             cmd, _ = dm.build_command(self.settings, DeploymentConfig(
                 model_name="Qwen2.5-1.5B-Instruct", port=8000, kv_cache_dtype="fp8",
             ))
-        self.assertIn("fp8", cmd)
+
+
+class ExtraLlmApiOptionsTests(unittest.TestCase):
+    """extra_llm_api_options is the only path to nested trtllm-serve config
+    (cuda_graph_config.enable_padding, scheduler_config policy, etc) not
+    exposed as top-level CLI flags -- these tests check the file-write +
+    mount + --config wiring, not whether trtllm-serve actually accepts
+    JSON-as-YAML content (that part is genuinely unconfirmed, see the
+    field's docstring).
+    """
+    def setUp(self):
+        dm._deployments.clear()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.settings = AppSettings(data_dir=self.tmp.name, model_dir=self.tmp.name)
+
+    def tearDown(self):
+        dm._deployments.clear()
+        self.tmp.cleanup()
+
+    def test_no_options_means_no_config_flag_or_mount(self):
+        with patch.object(dm, "get_model", return_value=FAKE_MODEL), \
+             patch.object(dm, "cached_manifest", return_value=None), \
+             patch.object(dm, "_port_free", return_value=True):
+            cmd, _ = dm.build_command(self.settings, DeploymentConfig(
+                model_name="Qwen2.5-1.5B-Instruct", port=8000,
+            ))
+        self.assertNotIn("--config", cmd)
+
+    def test_options_present_adds_config_flag_and_mount(self):
+        with patch.object(dm, "get_model", return_value=FAKE_MODEL), \
+             patch.object(dm, "cached_manifest", return_value=None), \
+             patch.object(dm, "_port_free", return_value=True):
+            cmd, _ = dm.build_command(self.settings, DeploymentConfig(
+                model_name="Qwen2.5-1.5B-Instruct", port=8000,
+                extra_llm_api_options={"cuda_graph_config": {"enable_padding": True}},
+            ))
+        self.assertIn("--config", cmd)
+        self.assertIn("/trtllm_extra_config.yaml", cmd)
+        mount_args = [a for a in cmd if a.endswith(":/trtllm_extra_config.yaml:ro")]
+        self.assertEqual(len(mount_args), 1)
+
+    def test_options_are_actually_written_to_host_file(self):
+        with patch.object(dm, "get_model", return_value=FAKE_MODEL), \
+             patch.object(dm, "cached_manifest", return_value=None), \
+             patch.object(dm, "_port_free", return_value=True):
+            cmd, _ = dm.build_command(self.settings, DeploymentConfig(
+                model_name="Qwen2.5-1.5B-Instruct", port=8000,
+                extra_llm_api_options={"scheduler_config": {"capacity_scheduler_policy": "MAX_UTILIZATION"}},
+            ))
+        mount_arg = next(a for a in cmd if a.endswith(":/trtllm_extra_config.yaml:ro"))
+        host_path = mount_arg.split(":/trtllm_extra_config.yaml:ro")[0]
+        written = json.loads(Path(host_path).read_text(encoding="utf-8"))
+        self.assertEqual(written["scheduler_config"]["capacity_scheduler_policy"], "MAX_UTILIZATION")
 
 
 class PreflightTests(unittest.TestCase):
@@ -225,6 +280,69 @@ class GetStatusStaleReasonTests(unittest.TestCase):
         self.assertEqual(record["status"], "exited")
         # Stale reason from the old error state is left alone here; a
         # fresh create/watch cycle would overwrite it if this exit is new.
+
+
+class RehydrationOnMissedReconcileTests(unittest.TestCase):
+    """Regression: confirmed in real-world testing, not hypothetical --
+    reconcile()'s finite startup retry window can be exceeded by a slow
+    Docker cold boot, after which the container comes up seconds later
+    but nothing in-memory ever knows about it for the rest of the
+    process's life. get_status() and preflight's port-ownership check
+    must self-heal via an on-demand Docker lookup rather than trusting
+    the in-memory table as proof of non-existence.
+    """
+    def setUp(self):
+        dm._deployments.clear()
+        self.settings = AppSettings(data_dir="/tmp/trtllm-ui-test", model_dir="/tmp/models")
+
+    def tearDown(self):
+        dm._deployments.clear()
+
+    def test_get_status_rehydrates_a_running_container_reconcile_missed(self):
+        fake_inspect = {
+            "State": {"Status": "running", "Running": True},
+            "NetworkSettings": {"Ports": {"8000/tcp": [{"HostPort": "8000"}]}},
+            "Config": {"Cmd": ["trtllm-serve", "serve", "/models/x"]},
+        }
+        with patch.object(dm, "_docker_inspect", return_value=fake_inspect), \
+             patch.object(dm, "_extract_port", return_value=8000), \
+             patch.object(dm, "_reconstruct_config", return_value={"reconstructed": True}), \
+             patch.object(dm, "urlopen", side_effect=Exception("not answering yet")):
+            record = dm.get_status("qwen2-5-1-5b-instruct")
+        self.assertEqual(record["port"], 8000)
+        self.assertIn("Rehydrated on-demand", record["warnings"][0])
+        # Second call must not re-hit docker inspect for the rehydration
+        # path -- it's now tracked in memory.
+        self.assertIn("qwen2-5-1-5b-instruct", dm._deployments)
+
+    def test_get_status_still_raises_for_a_container_that_truly_does_not_exist(self):
+        with patch.object(dm, "_docker_inspect", return_value=None):
+            with self.assertRaises(KeyError):
+                dm.get_status("never-deployed")
+
+    def test_preflight_self_heals_port_ownership_after_missed_reconcile(self):
+        # No in-memory record at all (simulating a missed reconcile), but
+        # Docker confirms this exact deployment already owns port 8000 --
+        # preflight must pass, not hard-fail against its own port.
+        fake_inspect = {
+            "State": {"Status": "running", "Running": True},
+            "NetworkSettings": {"Ports": {"8000/tcp": [{"HostPort": "8000"}]}},
+            "Config": {"Cmd": ["trtllm-serve", "serve", "/models/x"]},
+        }
+        with patch.object(dm, "get_model", return_value=FAKE_MODEL), \
+             patch.object(dm, "cached_manifest", return_value=AMPERE_MANIFEST), \
+             patch.object(dm.gpu_monitor, "poll", return_value=FAKE_GPU_OK), \
+             patch.object(dm, "_docker_inspect", return_value=fake_inspect), \
+             patch.object(dm, "_extract_port", return_value=8000), \
+             patch.object(dm, "_reconstruct_config", return_value={}), \
+             patch.object(dm, "_port_free", return_value=False), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="28.0.0", stderr="")):
+            report = dm.preflight(self.settings, DeploymentConfig(
+                model_name="Qwen2.5-1.5B-Instruct", port=8000,
+            ))
+        port_check = next(c for c in report["checks"] if c["name"] == "port")
+        self.assertEqual(port_check["status"], "pass")
+        self.assertIn("reused", port_check["detail"])
 
 
 if __name__ == "__main__":

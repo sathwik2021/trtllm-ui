@@ -99,6 +99,10 @@ function deploy(){
     <label><input id="trc" type="checkbox" onchange="updateCommand()"> trust_remote_code</label>
     <label>Unsafe confirmation<input id="ack" placeholder="Type ENABLE UNSAFE" oninput="updateCommand()"></label>
     <label>Extra flags JSON<textarea id="extra" oninput="updateCommand()">{}</textarea></label>
+    <label>Extra LLM API options (nested config, mounted as --config)
+      <textarea id="extraLlmOpts" oninput="updateCommand()" placeholder='e.g. {"cuda_graph_config": {"enable_padding": true}}'></textarea>
+      <p class="muted">Unconfirmed against this exact trtllm-serve build — for config fields not exposed as top-level flags (see LLM Args in deployment logs). Written as JSON to a mounted file. Leave blank to skip.</p>
+    </label>
   </details>
   <h3>Generated command</h3><pre id="command"></pre>
   <button onclick="runPreflight()">Run Pre-flight Check</button>
@@ -110,12 +114,16 @@ function deploy(){
 }
 function configFromForm(){
   let extra={}; try{extra=JSON.parse(document.getElementById("extra").value||"{}")}catch{}
+  let extraLlmOpts=null;
+  const rawOpts=(document.getElementById("extraLlmOpts")?.value||"").trim();
+  if(rawOpts){try{extraLlmOpts=JSON.parse(rawOpts)}catch{}}
   const num=id=>{const el=document.getElementById(id);if(!el)return null;const v=el.value;return v===""?null:Number(v)};
   return {model_name:document.getElementById("model").value,backend:document.getElementById("backend").value,host:document.getElementById("host").value,port:Number(document.getElementById("port").value),
     served_model_name:document.getElementById("served").value,max_batch_size:num("mb"),max_seq_len:num("ms"),max_output_tokens:num("mot"),tensor_parallel_size:num("tp")||1,
     pipeline_parallel_size:num("pp")||1,context_parallel_size:num("cp")||1,moe_expert_parallel_size:num("ep")||1,gpus_per_node:num("gpn"),
     kv_cache_dtype:document.getElementById("kv").value||null,free_gpu_memory_fraction:num("fg"),trust_remote_code:document.getElementById("trc").checked,
-    custom_module_dirs:document.getElementById("cmdirs").value||null,unsafe_ack:document.getElementById("ack").value||null,extra_flags:extra};
+    custom_module_dirs:document.getElementById("cmdirs").value||null,unsafe_ack:document.getElementById("ack").value||null,extra_flags:extra,
+    extra_llm_api_options:extraLlmOpts};
 }
 async function runPreflight(){
   const el=document.getElementById("preflight"); el.innerHTML="<p class=\"muted\">Running pre-flight checks…</p>";
@@ -130,10 +138,13 @@ function updateCommand(){
   const el=document.getElementById("command"); if(!el)return;
   const c=configFromForm(); const model=state.models.find(m=>m.name===c.model_name);
   if(!model){el.textContent="Select a model";return;}
-  let a=["docker","run","-d","--name","trtllm-ui-PREVIEW","--gpus","all","--ipc=host","--ulimit","memlock=-1","--ulimit","stack=67108864","-p",`127.0.0.1:${c.port}:${c.port}`,"-v",`${model.host_path}:${model.container_path}:ro`,state.settings.docker_image,"trtllm-serve","serve",model.container_path,"--backend",c.backend,"--host",c.host,"--port",String(c.port),"--served_model_name",c.served_model_name||c.model_name];
+  let a=["docker","run","-d","--name","trtllm-ui-PREVIEW","--gpus","all","--ipc=host","--ulimit","memlock=-1","--ulimit","stack=67108864","-p",`127.0.0.1:${c.port}:${c.port}`,"-v",`${model.host_path}:${model.container_path}:ro`];
+  if(c.extra_llm_api_options) a.push("-v","<data_dir>/llm_api_options/<id>.yaml:/trtllm_extra_config.yaml:ro");
+  a.push(state.settings.docker_image,"trtllm-serve","serve",model.container_path,"--backend",c.backend,"--host",c.host,"--port",String(c.port),"--served_model_name",c.served_model_name||c.model_name);
   [["max_batch_size",c.max_batch_size],["max_seq_len",c.max_seq_len],["tensor_parallel_size",c.tensor_parallel_size!==1?c.tensor_parallel_size:null],["pipeline_parallel_size",c.pipeline_parallel_size!==1?c.pipeline_parallel_size:null],["context_parallel_size",c.context_parallel_size!==1?c.context_parallel_size:null],["moe_expert_parallel_size",c.moe_expert_parallel_size!==1?c.moe_expert_parallel_size:null],["gpus_per_node",c.gpus_per_node],["kv_cache_dtype",c.kv_cache_dtype],["free_gpu_memory_fraction",c.free_gpu_memory_fraction]].forEach(([k,v])=>{if(v!=null)a.push("--"+k,String(v));});
   if(c.trust_remote_code)a.push("--trust_remote_code"); if(c.custom_module_dirs)a.push("--custom_module_dirs",c.custom_module_dirs);
   Object.entries(c.extra_flags||{}).forEach(([k,v])=>{if(v===true)a.push(k.startsWith("--")?k:"--"+k);else if(v!==false&&v!=null&&v!=="")a.push(k.startsWith("--")?k:"--"+k,String(v));});
+  if(c.extra_llm_api_options) a.push("--config","/trtllm_extra_config.yaml");
   el.textContent=a.map(x=>/[\s"'\\]/.test(x)?`'${x.replaceAll("'","'\\''")}'`:x).join(" ");
 }
 async function launch(){
