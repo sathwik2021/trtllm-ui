@@ -304,6 +304,28 @@ def _watch(deployment_id: str, port: int) -> None:
     _deployments[deployment_id]["reason"] = "startup timeout — check logs"
 
 
+def _effective_config_dict(config: DeploymentConfig) -> dict[str, Any]:
+    """config.model_dump() with served_model_name resolved to its actual
+    effective value (falling back to model_name), matching what
+    build_command() already does when constructing the real `docker run`
+    argv. Storing the UNRESOLVED None here (as this used to, at all three
+    call sites below) meant any downstream consumer reading the persisted
+    record's served_model_name -- e.g. the benchmark endpoint's
+    deployment_id-based resolution in main.py -- could see None even
+    though the container is actually serving fine under model_name, and
+    would wrongly 400 as if nothing were configured at all.
+
+    Confirmed to happen in practice, not just a theoretical gap: this
+    project's own build_sweep.py omits served_model_name from its deploy
+    requests (reasonably -- it lets the server-side default apply, same
+    as build_command's own fallback), which reliably triggered exactly
+    this failure on every single benchmark call in an 11-variant sweep.
+    """
+    d = config.model_dump()
+    d["served_model_name"] = config.served_model_name or config.model_name
+    return d
+
+
 def create_container(settings: AppSettings, config: DeploymentConfig) -> dict[str, Any]:
     """Create a brand-new container (`docker run -d`). Only safe to call
     when no container with the derived name already exists -- callers
@@ -317,7 +339,7 @@ def create_container(settings: AppSettings, config: DeploymentConfig) -> dict[st
     record = {
         "deployment_id": deployment_id,
         "container_name": f"trtllm-ui-{deployment_id}",
-        "config": config.model_dump(),
+        "config": _effective_config_dict(config),
         "port": config.port,
         "status": "starting",
         "warnings": warnings,
@@ -384,7 +406,7 @@ def start_deployment(settings: AppSettings, config: DeploymentConfig) -> dict[st
                 record = {
                     "deployment_id": deployment_id,
                     "container_name": container_name,
-                    "config": config.model_dump(),
+                    "config": _effective_config_dict(config),
                     "port": port,
                     "status": "running",
                     "warnings": [],
@@ -399,7 +421,7 @@ def start_deployment(settings: AppSettings, config: DeploymentConfig) -> dict[st
         return reused
 
     port = _extract_port(info) or config.port
-    return start_container(deployment_id, container_name, port, config.model_dump())
+    return start_container(deployment_id, container_name, port, _effective_config_dict(config))
 
 
 def reconcile(retries: int = 3, retry_delay: float = 3.0) -> None:

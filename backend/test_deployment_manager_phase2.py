@@ -345,5 +345,61 @@ class RehydrationOnMissedReconcileTests(unittest.TestCase):
         self.assertIn("reused", port_check["detail"])
 
 
+class EffectiveConfigServedModelNameTests(unittest.TestCase):
+    """Regression: confirmed in real-world use, not hypothetical --
+    build_sweep.py's deploy requests omit served_model_name (reasonably,
+    relying on the server-side default), and every single one of the 3
+    places that persist the deployment record used raw
+    config.model_dump() -- leaving served_model_name as None in the
+    STORED record even though build_command() already resolves it to
+    model_name for the actual `docker run` argv. Downstream consumers
+    that read the stored record's served_model_name (e.g. main.py's
+    /api/benchmarks deployment_id resolution) then saw None and 400'd,
+    even though the container was genuinely running fine. Reliably
+    reproduced this exact failure across an entire 11-variant sweep.
+    """
+    def test_effective_config_resolves_served_model_name_when_omitted(self):
+        config = DeploymentConfig(model_name="Qwen2.5-1.5B-Instruct", port=8000)
+        self.assertIsNone(config.served_model_name)  # confirms the omission itself
+        effective = dm._effective_config_dict(config)
+        self.assertEqual(effective["served_model_name"], "Qwen2.5-1.5B-Instruct")
+
+    def test_effective_config_preserves_explicit_served_model_name(self):
+        config = DeploymentConfig(model_name="Qwen2.5-1.5B-Instruct", port=8000, served_model_name="custom-name")
+        effective = dm._effective_config_dict(config)
+        self.assertEqual(effective["served_model_name"], "custom-name")
+
+    def test_create_container_persists_resolved_served_model_name(self):
+        dm._deployments.clear()
+        settings = AppSettings(data_dir="/tmp/trtllm-ui-test", model_dir="/tmp/models")
+        config = DeploymentConfig(model_name="Qwen2.5-1.5B-Instruct", port=8000)
+        with patch.object(dm, "get_model", return_value=FAKE_MODEL), \
+             patch.object(dm, "cached_manifest", return_value=None), \
+             patch.object(dm, "_port_free", return_value=True), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="containerid", stderr="")), \
+             patch.object(dm.threading, "Thread"):
+            record = dm.create_container(settings, config)
+        # This is the exact field main.py's /api/benchmarks reads via
+        # record["config"]["served_model_name"] -- must never be None
+        # for a deployment that's actually running.
+        self.assertEqual(record["config"]["served_model_name"], "Qwen2.5-1.5B-Instruct")
+        dm._deployments.clear()
+
+    def test_reused_running_deployment_also_has_resolved_served_model_name(self):
+        dm._deployments.clear()
+        settings = AppSettings(data_dir="/tmp/trtllm-ui-test", model_dir="/tmp/models")
+        config = DeploymentConfig(model_name="Qwen2.5-1.5B-Instruct", port=8000)
+        fake_inspect = {
+            "State": {"Status": "running", "Running": True},
+            "NetworkSettings": {"Ports": {"8000/tcp": [{"HostPort": "8000"}]}},
+            "Config": {"Cmd": ["trtllm-serve", "serve", "/models/x"]},
+        }
+        with patch.object(dm, "_docker_inspect", return_value=fake_inspect), \
+             patch.object(dm, "_extract_port", return_value=8000):
+            record = dm.start_deployment(settings, config)
+        self.assertEqual(record["config"]["served_model_name"], "Qwen2.5-1.5B-Instruct")
+        dm._deployments.clear()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
