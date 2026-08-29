@@ -72,11 +72,35 @@ Classification key (as instructed):
   `scripts/install-autostart.ps1`'s header comment, per the instruction
   to state this decision rather than default to one silently.
 - `scripts/install-autostart.ps1`, `scripts/uninstall-autostart.ps1`:
-  **NEEDS TESTING** — PowerShell isn't available in this sandbox
-  (no `pwsh`/`powershell`, and Microsoft's package repos aren't reachable
-  from this environment's allowed domain list), so these were written and
-  manually reviewed but never executed. Run them on the real machine
-  before trusting them.
+  **CONFIRMED WORKING**, tested on the real machine (2026-08-29):
+  - Both scripts require an **elevated (Administrator) PowerShell
+    session** to run — first attempt from a normal session failed at
+    the unsigned-script execution-policy check
+    (`UnauthorizedAccess: ... is not digitally signed`), and again at
+    `Unregister-ScheduledTask : Access is denied` even after bypassing
+    execution policy. This requirement was not previously documented
+    anywhere and is worth stating explicitly for future setup
+    instructions: **run both scripts from an Administrator PowerShell,
+    with `-ExecutionPolicy Bypass`.**
+  - From an elevated session: `uninstall-autostart.ps1` correctly
+    removed the task (confirmed via `Get-ScheduledTask` returning
+    nothing afterward). `install-autostart.ps1` correctly re-registered
+    it (confirmed via `Get-ScheduledTask` showing `State: Ready`).
+  - The installed task itself runs at **`RunLevel: Limited`**,
+    `LogonType: Interactive`, under the installing user account — i.e.
+    the elevation requirement applies only to installing/uninstalling
+    the task, not to the task's own execution. This is the expected,
+    correct behavior (the app process itself shouldn't need admin
+    rights to run).
+  - Triggered without a reboot via `Start-ScheduledTask`, confirmed the
+    app actually came up and served real content:
+    `Invoke-WebRequest http://127.0.0.1:8420` returned `StatusCode: 200`
+    with the app's real HTML. (First immediate check failed with
+    "unable to connect" — a startup-time race, not a real failure;
+    retrying a few seconds later succeeded.)
+  - `Get-ScheduledTaskInfo` showed `LastTaskResult: 267009`
+    (`SCHED_S_TASK_RUNNING`) — the correct status code for a
+    long-running server process still active, not an error code.
 
 ## 6. Real reboot test
 
