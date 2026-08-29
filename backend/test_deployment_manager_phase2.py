@@ -401,5 +401,66 @@ class EffectiveConfigServedModelNameTests(unittest.TestCase):
         dm._deployments.clear()
 
 
+class PublishHostTests(unittest.TestCase):
+    """publish_host controls Docker's -p HOST_IP:port:port binding --
+    separate from `host`, which is trtllm-serve's own --host flag inside
+    the container. Default must stay loopback-only for every deployment
+    that doesn't explicitly opt in, since this server has no
+    authentication of its own.
+    """
+    def setUp(self):
+        dm._deployments.clear()
+        self.settings = AppSettings(data_dir="/tmp/trtllm-ui-test", model_dir="/tmp/models")
+
+    def tearDown(self):
+        dm._deployments.clear()
+
+    def test_default_publish_host_is_loopback(self):
+        config = DeploymentConfig(model_name="Qwen2.5-1.5B-Instruct", port=8000)
+        self.assertEqual(config.publish_host, "127.0.0.1")
+
+    def test_default_publish_host_generates_loopback_bound_port_flag(self):
+        with patch.object(dm, "get_model", return_value=FAKE_MODEL), \
+             patch.object(dm, "cached_manifest", return_value=None), \
+             patch.object(dm, "_port_free", return_value=True):
+            cmd, warnings = dm.build_command(self.settings, DeploymentConfig(
+                model_name="Qwen2.5-1.5B-Instruct", port=8000,
+            ))
+        self.assertIn("127.0.0.1:8000:8000", cmd)
+        self.assertFalse(any("publish_host" in w.lower() or "network" in w.lower() for w in warnings),
+                          f"default loopback deployment should not trigger a network-exposure warning, got: {warnings}")
+
+    def test_explicit_0000_generates_open_port_flag_and_warns(self):
+        with patch.object(dm, "get_model", return_value=FAKE_MODEL), \
+             patch.object(dm, "cached_manifest", return_value=None), \
+             patch.object(dm, "_port_free", return_value=True):
+            cmd, warnings = dm.build_command(self.settings, DeploymentConfig(
+                model_name="Qwen2.5-1.5B-Instruct", port=8000, publish_host="0.0.0.0",
+            ))
+        self.assertIn("0.0.0.0:8000:8000", cmd)
+        self.assertNotIn("127.0.0.1:8000:8000", cmd)
+        self.assertTrue(any("no" in w.lower() and "auth" in w.lower() for w in warnings),
+                         f"expected a no-authentication warning, got: {warnings}")
+
+    def test_health_check_urls_stay_loopback_regardless_of_publish_host(self):
+        # get_status()'s own liveness check must always use loopback --
+        # the app itself runs on the same host regardless of what
+        # publish_host exposes the deployment to externally.
+        dm._deployments["qwen2-5-1-5b-instruct"] = {
+            "deployment_id": "qwen2-5-1-5b-instruct", "container_name": "trtllm-ui-qwen2-5-1-5b-instruct",
+            "config": {"publish_host": "0.0.0.0"}, "port": 8000, "status": "running", "warnings": [], "command": [],
+        }
+        fake_response = MagicMock()
+        fake_response.status = 200
+        fake_response.__enter__ = lambda s: fake_response
+        fake_response.__exit__ = lambda s, *a: False
+        with patch.object(dm, "_docker_inspect", return_value={"State": {"Status": "running"}}), \
+             patch.object(dm, "urlopen", return_value=fake_response) as mock_urlopen:
+            dm.get_status("qwen2-5-1-5b-instruct")
+        called_url = mock_urlopen.call_args[0][0]
+        self.assertTrue(called_url.startswith("http://127.0.0.1:"), f"expected loopback health-check URL, got: {called_url}")
+        dm._deployments.clear()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

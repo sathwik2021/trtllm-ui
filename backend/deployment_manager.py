@@ -33,8 +33,18 @@ class DeploymentConfig(BaseModel):
     name: str | None = None
     model_name: str
     backend: str = "pytorch"
-    host: str = "0.0.0.0"
+    host: str = "0.0.0.0"  # passed to trtllm-serve's own --host flag INSIDE the container -- not the same as publish_host below.
     port: int = 8000
+    # Which HOST network interface Docker publishes the port on
+    # (`-p <publish_host>:<port>:<port>`), separate from `host` above.
+    # Defaults to loopback-only (127.0.0.1): only processes on THIS
+    # machine can reach the deployment. Set to "0.0.0.0" to expose it to
+    # other devices on the local network -- this server has NO
+    # authentication, so anyone who can reach the port can send requests
+    # and consume your GPU. This is an explicit, informed opt-in per
+    # deployment, not a project-wide default change: every other
+    # deployment made without setting this stays loopback-only.
+    publish_host: str = "127.0.0.1"
     served_model_name: str | None = None
     max_batch_size: int | None = None
     max_seq_len: int | None = None
@@ -214,7 +224,7 @@ def build_command(settings: AppSettings, config: DeploymentConfig, deployment_id
         "--ipc=host",
         "--ulimit", "memlock=-1",
         "--ulimit", "stack=67108864",
-        "-p", f"127.0.0.1:{config.port}:{config.port}",
+        "-p", f"{config.publish_host}:{config.port}:{config.port}",
         "-v", f"{model['host_path']}:{model['container_path']}:ro",
         *config_mount,
         settings.docker_image,
@@ -249,6 +259,13 @@ def build_command(settings: AppSettings, config: DeploymentConfig, deployment_id
         cmd.extend(["--custom_module_dirs", config.custom_module_dirs])
 
     warnings = []
+    if config.publish_host not in ("127.0.0.1", "localhost"):
+        warnings.append(
+            f"publish_host is '{config.publish_host}' -- this deployment is reachable from "
+            "other devices on the local network, NOT just this machine. There is no "
+            "authentication on this server: anyone who can reach the port can send requests "
+            "and consume your GPU. This was an explicit choice for this deployment."
+        )
     manifest = cached_manifest(settings)
     known = {
         x["name"].lstrip("-")

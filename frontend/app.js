@@ -81,6 +81,12 @@ function deploy(){
   <label>Backend<input id="backend" value="pytorch" oninput="updateCommand()"></label>
   <label>Internal TensorRT-LLM host<input id="host" value="0.0.0.0" oninput="updateCommand()"></label>
   <label>Host-published port<input id="port" type="number" value="8000" oninput="updateCommand()"></label>
+  <label>Network exposure
+    <select id="pubhost" onchange="updateCommand()">
+      <option value="127.0.0.1" selected>This machine only (127.0.0.1) — recommended</option>
+      <option value="0.0.0.0">Local network (0.0.0.0) — no authentication on this server, anyone on your network can reach it</option>
+    </select>
+  </label>
   <label>Served model name<input id="served" oninput="updateCommand()"></label>
   <label>Max batch size<input id="mb" type="number" oninput="updateCommand()"></label>
   <label>Max input/context length<input id="ms" type="number" oninput="updateCommand()"></label>
@@ -119,6 +125,7 @@ function configFromForm(){
   if(rawOpts){try{extraLlmOpts=JSON.parse(rawOpts)}catch{}}
   const num=id=>{const el=document.getElementById(id);if(!el)return null;const v=el.value;return v===""?null:Number(v)};
   return {model_name:document.getElementById("model").value,backend:document.getElementById("backend").value,host:document.getElementById("host").value,port:Number(document.getElementById("port").value),
+    publish_host:document.getElementById("pubhost").value,
     served_model_name:document.getElementById("served").value,max_batch_size:num("mb"),max_seq_len:num("ms"),max_output_tokens:num("mot"),tensor_parallel_size:num("tp")||1,
     pipeline_parallel_size:num("pp")||1,context_parallel_size:num("cp")||1,moe_expert_parallel_size:num("ep")||1,gpus_per_node:num("gpn"),
     kv_cache_dtype:document.getElementById("kv").value||null,free_gpu_memory_fraction:num("fg"),trust_remote_code:document.getElementById("trc").checked,
@@ -138,7 +145,7 @@ function updateCommand(){
   const el=document.getElementById("command"); if(!el)return;
   const c=configFromForm(); const model=state.models.find(m=>m.name===c.model_name);
   if(!model){el.textContent="Select a model";return;}
-  let a=["docker","run","-d","--name","trtllm-ui-PREVIEW","--gpus","all","--ipc=host","--ulimit","memlock=-1","--ulimit","stack=67108864","-p",`127.0.0.1:${c.port}:${c.port}`,"-v",`${model.host_path}:${model.container_path}:ro`];
+  let a=["docker","run","-d","--name","trtllm-ui-PREVIEW","--gpus","all","--ipc=host","--ulimit","memlock=-1","--ulimit","stack=67108864","-p",`${c.publish_host}:${c.port}:${c.port}`,"-v",`${model.host_path}:${model.container_path}:ro`];
   if(c.extra_llm_api_options) a.push("-v","<data_dir>/llm_api_options/<id>.yaml:/trtllm_extra_config.yaml:ro");
   a.push(state.settings.docker_image,"trtllm-serve","serve",model.container_path,"--backend",c.backend,"--host",c.host,"--port",String(c.port),"--served_model_name",c.served_model_name||c.model_name);
   [["max_batch_size",c.max_batch_size],["max_seq_len",c.max_seq_len],["tensor_parallel_size",c.tensor_parallel_size!==1?c.tensor_parallel_size:null],["pipeline_parallel_size",c.pipeline_parallel_size!==1?c.pipeline_parallel_size:null],["context_parallel_size",c.context_parallel_size!==1?c.context_parallel_size:null],["moe_expert_parallel_size",c.moe_expert_parallel_size!==1?c.moe_expert_parallel_size:null],["gpus_per_node",c.gpus_per_node],["kv_cache_dtype",c.kv_cache_dtype],["free_gpu_memory_fraction",c.free_gpu_memory_fraction]].forEach(([k,v])=>{if(v!=null)a.push("--"+k,String(v));});
