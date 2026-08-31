@@ -18,12 +18,14 @@ async function refresh(){
 }
 function nav(){document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>show(b.dataset.page));}
 async function show(page){
+  _closeLiveStream();
   try{await refresh();}catch(e){app.innerHTML=`<div class="card error">${esc(e.message)}</div>`;return;}
   if(page==="dashboard") dashboard();
   else if(page==="models") models();
   else if(page==="deploy") deploy();
   else if(page==="deployments") deployments();
   else if(page==="benchmark") benchmark();
+  else if(page==="live") liveMonitor();
   else if(page==="chat") chat();
   else if(page==="storage") storage();
   else if(page==="profiles") profiles();
@@ -252,5 +254,94 @@ async function viewBenchmark(id){
 function fmtS(v){return v==null?"n/a":v.toFixed(2)+"s";}
 function fmtN(v){return v==null?"n/a":v.toFixed(1);}
 async function deleteBenchmark(id){await api(`/api/benchmarks/${id}`,{method:"DELETE"});state_refresh_history();}
+
+let liveES=null;
+let liveHistory=[];  // rolling window of {t, util, memUsed, memTotal} for the sparkline
+function _closeLiveStream(){if(liveES){liveES.close();liveES=null;}}
+
+function liveMonitor(){
+  liveHistory=[];
+  app.innerHTML=`<div class="card"><h2>Live Monitor</h2>
+    <p class="muted">Streams from /api/gpu/stream every 2s -- no need to run nvidia-smi manually in a separate terminal while watching a benchmark or a real workload.</p>
+    <div id="liveBody"><p class="muted">Connecting...</p></div>
+    <canvas id="liveSpark" width="640" height="80" style="width:100%;max-width:640px;background:#0001;border-radius:6px;margin-top:8px"></canvas>
+    <p class="muted" style="font-size:0.85em">GPU utilization % over the last ~2 minutes (60 samples @ 2s)</p>
+  </div>
+  <div class="card"><h3>Raw samples (most recent first)</h3><div id="liveLog" style="font-family:monospace;font-size:0.85em;max-height:240px;overflow-y:auto"></div></div>`;
+
+  liveES=new EventSource("/api/gpu/stream");
+  liveES.onmessage=(e)=>{
+    const data=JSON.parse(e.data);
+    renderLive(data);
+  };
+  liveES.onerror=()=>{
+    const el=document.getElementById("liveBody");
+    if(el) el.innerHTML=`<p class="error">Stream connection lost -- will keep retrying automatically.</p>`;
+  };
+}
+
+function renderLive(data){
+  const bodyEl=document.getElementById("liveBody");
+  const logEl=document.getElementById("liveLog");
+  if(!bodyEl||!logEl) return;  // navigated away mid-stream
+
+  if(data.error){
+    bodyEl.innerHTML=`<p class="error">GPU unreachable: ${esc(data.error)}</p>`;
+    return;
+  }
+  const gpus=data.gpus||[];
+  if(!gpus.length){bodyEl.innerHTML=`<p class="muted">No GPU data in this sample.</p>`;return;}
+
+  bodyEl.innerHTML=gpus.map(g=>{
+    const util=Number(g.utilization_gpu)||0;
+    const memUsed=Number(g.memory_used)||0;
+    const memTotal=Number(g.memory_total)||1;
+    const memPct=Math.min(100,(memUsed/memTotal)*100);
+    return `<div style="margin-bottom:12px">
+      <b>GPU ${esc(String(g.index))}</b>
+      <div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:4px">
+        <div>Utilization<br><span style="font-size:1.6em;font-weight:600">${util}%</span></div>
+        <div>VRAM<br><span style="font-size:1.6em;font-weight:600">${memUsed}/${memTotal} MB</span></div>
+        <div>Temp<br><span style="font-size:1.6em;font-weight:600">${esc(g.temperature_gpu)}&deg;C</span></div>
+        <div>Power<br><span style="font-size:1.6em;font-weight:600">${esc(g.power_draw)}W</span></div>
+      </div>
+      <div style="background:#8883;border-radius:4px;height:8px;margin-top:6px;overflow:hidden">
+        <div style="background:${util>90?'#dc2626':util>50?'#f59e0b':'#16a34a'};height:100%;width:${util}%;transition:width .3s"></div>
+      </div>
+      <div style="background:#8883;border-radius:4px;height:8px;margin-top:4px;overflow:hidden">
+        <div style="background:#2563eb;height:100%;width:${memPct}%;transition:width .3s"></div>
+      </div>
+    </div>`;
+  }).join("");
+
+  const first=gpus[0];
+  liveHistory.push({t:Date.now(),util:Number(first.utilization_gpu)||0});
+  if(liveHistory.length>60) liveHistory.shift();
+  drawSparkline();
+
+  const line=`${new Date().toLocaleTimeString()}  ${gpus.map(g=>`GPU${g.index}: ${g.utilization_gpu}% util, ${g.memory_used}MB, ${g.temperature_gpu}C, ${g.power_draw}W`).join(" | ")}`;
+  const div=document.createElement("div");
+  div.textContent=line;
+  logEl.insertBefore(div, logEl.firstChild);
+  while(logEl.children.length>60) logEl.removeChild(logEl.lastChild);
+}
+
+function drawSparkline(){
+  const canvas=document.getElementById("liveSpark");
+  if(!canvas) return;
+  const ctx=canvas.getContext("2d");
+  const w=canvas.width, h=canvas.height;
+  ctx.clearRect(0,0,w,h);
+  if(liveHistory.length<2) return;
+  ctx.strokeStyle="#2563eb";
+  ctx.lineWidth=2;
+  ctx.beginPath();
+  liveHistory.forEach((pt,i)=>{
+    const x=(i/(liveHistory.length-1))*w;
+    const y=h-(pt.util/100)*h;
+    if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  });
+  ctx.stroke();
+}
 
 nav();show("dashboard");
