@@ -1,0 +1,532 @@
+{
+  "ran_at": 1787835447.7786617,
+  "model": "Qwen2.5-1.5B-Instruct",
+  "concurrency": 100,
+  "request_count": 200,
+  "repeats": 4,
+  "interleaved": false,
+  "results": [
+    {
+      "variant": "baseline_defaults",
+      "config": {},
+      "status": "ok",
+      "throughput_median": 2431.8934708904635,
+      "throughput_all_runs": [
+        523.2746260074399,
+        2421.70553214848,
+        2442.081409632447,
+        2449.45029215445
+      ],
+      "p50_median": 7.233439224999529,
+      "raw_runs": [
+        {
+          "id": "dd1e76d5-9f8a-4635-9fc0-4daebe2a6a09",
+          "throughput": 523.2746260074399,
+          "p50": 36.46184344999892,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "b1bde0b2-aa7c-4da8-ad65-2499cf4ce95b",
+          "throughput": 2421.70553214848,
+          "p50": 7.064488550000533,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "b4168c71-a0ca-407f-9930-77e2e5b21c2d",
+          "throughput": 2442.081409632447,
+          "p50": 7.099821400001019,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "c5712983-ebce-4b0f-88cc-a21a389bda0d",
+          "throughput": 2449.45029215445,
+          "p50": 7.367057049998039,
+          "ok_count": 200,
+          "failed_count": 0
+        }
+      ]
+    },
+    {
+      "variant": "mem_fraction_0.95",
+      "config": {
+        "free_gpu_memory_fraction": 0.95
+      },
+      "status": "ok",
+      "throughput_median": 2435.758563687569,
+      "throughput_all_runs": [
+        530.1324214212892,
+        2491.225011175528,
+        2386.5531342687163,
+        2484.963993106422
+      ],
+      "p50_median": 7.249069925000185,
+      "raw_runs": [
+        {
+          "id": "6611659e-c05f-4c13-8f5a-9ab32377e63b",
+          "throughput": 530.1324214212892,
+          "p50": 36.87084649999997,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "10e13faa-6732-4139-8bcd-1f62410a2315",
+          "throughput": 2491.225011175528,
+          "p50": 7.098910900000192,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "ae88b692-494b-4b90-9166-036b7195d6e0",
+          "throughput": 2386.5531342687163,
+          "p50": 6.8945642999988195,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "3a624165-d3d5-4163-b58b-3a8712ffb63b",
+          "throughput": 2484.963993106422,
+          "p50": 7.399228950000179,
+          "ok_count": 200,
+          "failed_count": 0
+        }
+      ]
+    },
+    {
+      "variant": "chunked_prefill",
+      "config": {
+        "extra_flags": {
+          "enable_chunked_prefill": true
+        }
+      },
+      "status": "ok",
+      "throughput_median": 2431.510962566889,
+      "throughput_all_runs": [
+        536.3523367606033,
+        2444.129191625485,
+        2435.237167812038,
+        2427.7847573217396
+      ],
+      "p50_median": 6.99144570000044,
+      "raw_runs": [
+        {
+          "id": "238afc07-3591-4c7e-bb84-e330c92a94b9",
+          "throughput": 536.3523367606033,
+          "p50": 36.93480610000006,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "437a49f2-07a8-4d8b-a0b5-e0fdfef86281",
+          "throughput": 2444.129191625485,
+          "p50": 6.996160599999712,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "6794b66a-65fe-4e36-b2a0-1d1da8b7e00b",
+          "throughput": 2435.237167812038,
+          "p50": 6.986730800001169,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "4e60fe74-6194-4bf9-a923-52ee738f44ae",
+          "throughput": 2427.7847573217396,
+          "p50": 6.807605399997556,
+          "ok_count": 200,
+          "failed_count": 0
+        }
+      ]
+    },
+    {
+      "variant": "mem_0.95_plus_chunked_prefill",
+      "config": {
+        "free_gpu_memory_fraction": 0.95,
+        "extra_flags": {
+          "enable_chunked_prefill": true
+        }
+      },
+      "status": "ok",
+      "throughput_median": 2433.7658308344253,
+      "throughput_all_runs": [
+        521.1289899367958,
+        2467.04641128669,
+        2452.402335406247,
+        2415.129326262604
+      ],
+      "p50_median": 7.125295974999972,
+      "raw_runs": [
+        {
+          "id": "fc0fe234-ff01-40a1-b237-a7a98e8e9933",
+          "throughput": 521.1289899367958,
+          "p50": 37.425994100000025,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "47edf529-d869-4130-a2ce-fb61ebe7b04a",
+          "throughput": 2467.04641128669,
+          "p50": 6.974075199999788,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "26239041-3f98-47d7-a8fe-f74707a3a558",
+          "throughput": 2452.402335406247,
+          "p50": 7.276516750000155,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "557dfebf-90f7-47d8-9092-8b6fc60f75c9",
+          "throughput": 2415.129326262604,
+          "p50": 6.943633749999208,
+          "ok_count": 200,
+          "failed_count": 0
+        }
+      ]
+    },
+    {
+      "variant": "cuda_graph_padding",
+      "config": {
+        "extra_llm_api_options": {
+          "cuda_graph_config": {
+            "enable_padding": true
+          }
+        }
+      },
+      "status": "ok",
+      "throughput_median": 2449.9377041662865,
+      "throughput_all_runs": [
+        527.3147027839851,
+        2510.8796518122085,
+        2462.66472710874,
+        2437.2106812238326
+      ],
+      "p50_median": 7.265557474999696,
+      "raw_runs": [
+        {
+          "id": "8b810598-af3e-4bed-b221-f84dfa8da540",
+          "throughput": 527.3147027839851,
+          "p50": 36.588404649999575,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "2c5ee87d-6e87-427d-99af-312cc6ab9a21",
+          "throughput": 2510.8796518122085,
+          "p50": 7.2075855000002775,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "1ad4c1b7-3524-4f25-8321-39a2bf93be38",
+          "throughput": 2462.66472710874,
+          "p50": 7.323529449999114,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "bab7d554-78f8-4467-999b-78cc49e97219",
+          "throughput": 2437.2106812238326,
+          "p50": 7.106276149999758,
+          "ok_count": 200,
+          "failed_count": 0
+        }
+      ]
+    },
+    {
+      "variant": "cuda_graph_padding_batch256",
+      "config": {
+        "extra_llm_api_options": {
+          "cuda_graph_config": {
+            "enable_padding": true,
+            "max_batch_size": 256
+          }
+        }
+      },
+      "status": "ok",
+      "throughput_median": 2426.055024619108,
+      "throughput_all_runs": [
+        524.3212912147018,
+        2421.6866188262766,
+        2430.4234304119386,
+        2454.8921732817867
+      ],
+      "p50_median": 6.938053550001314,
+      "raw_runs": [
+        {
+          "id": "e20241d7-874c-4f3f-8531-690832b6a136",
+          "throughput": 524.3212912147018,
+          "p50": 35.9400114,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "635f78fb-619d-429b-aa58-a7caa3091092",
+          "throughput": 2421.6866188262766,
+          "p50": 6.910692350002137,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "7adee8e4-77f5-421d-a5eb-97f2bdb5e013",
+          "throughput": 2430.4234304119386,
+          "p50": 6.892206349999469,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "af0b76db-644a-4ea7-b33c-92549a88579a",
+          "throughput": 2454.8921732817867,
+          "p50": 6.965414750000491,
+          "ok_count": 200,
+          "failed_count": 0
+        }
+      ]
+    },
+    {
+      "variant": "attn_backend_flashinfer",
+      "config": {
+        "extra_llm_api_options": {
+          "attn_backend": "FLASHINFER"
+        }
+      },
+      "status": "ok",
+      "throughput_median": 939.3904183181455,
+      "throughput_all_runs": [
+        413.1219066194113,
+        928.8274718841553,
+        949.9533647521357,
+        969.0462327867846
+      ],
+      "p50_median": 22.182458624999526,
+      "raw_runs": [
+        {
+          "id": "f0462b88-0ea6-4aff-87a6-6f9644abd627",
+          "throughput": 413.1219066194113,
+          "p50": 50.31680134999988,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "10c1d6f3-2f1a-4685-8e19-ff5706567e3d",
+          "throughput": 928.8274718841553,
+          "p50": 22.547912500000166,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "f63a9dd6-7a52-4039-9e28-1a94051ae5d1",
+          "throughput": 949.9533647521357,
+          "p50": 21.444440049999685,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "d702f761-66e9-4227-99a0-a256deb9f526",
+          "throughput": 969.0462327867846,
+          "p50": 21.817004749998887,
+          "ok_count": 200,
+          "failed_count": 0
+        }
+      ]
+    },
+    {
+      "variant": "scheduler_max_utilization",
+      "config": {
+        "extra_llm_api_options": {
+          "scheduler_config": {
+            "capacity_scheduler_policy": "MAX_UTILIZATION"
+          }
+        }
+      },
+      "status": "ok",
+      "throughput_median": 2410.878106232097,
+      "throughput_all_runs": [
+        529.7278270069937,
+        2412.504216558132,
+        2462.639111261199,
+        2409.2519959060614
+      ],
+      "p50_median": 7.0371190750001915,
+      "raw_runs": [
+        {
+          "id": "41d45593-cb14-4fc8-9c53-90f3e65066a3",
+          "throughput": 529.7278270069937,
+          "p50": 36.89970469999935,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "0894680a-f60c-47e0-b8d6-813bc7ee8d9a",
+          "throughput": 2412.504216558132,
+          "p50": 6.797862549999991,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "6167ce73-984c-444d-a7db-e84cc932ffce",
+          "throughput": 2462.639111261199,
+          "p50": 7.276375600000392,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "7e102c81-d8a4-4187-9939-04a42489f0e9",
+          "throughput": 2409.2519959060614,
+          "p50": 6.593958200000998,
+          "ok_count": 200,
+          "failed_count": 0
+        }
+      ]
+    },
+    {
+      "variant": "postprocess_workers_4",
+      "config": {
+        "extra_flags": {
+          "num_postprocess_workers": 4
+        }
+      },
+      "status": "ok",
+      "throughput_median": 2428.5289237315646,
+      "throughput_all_runs": [
+        518.5069907120571,
+        2430.3109729594116,
+        2426.746874503717,
+        2460.739879707644
+      ],
+      "p50_median": 6.948183500000596,
+      "raw_runs": [
+        {
+          "id": "e41d9c8b-ebb6-4a25-bfe6-09359da059ef",
+          "throughput": 518.5069907120571,
+          "p50": 36.96863860000121,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "d205c4eb-86d4-4c12-8da0-99b30e8242f7",
+          "throughput": 2430.3109729594116,
+          "p50": 6.8438851999999315,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "23745d97-caac-43cd-ab36-c78844c87341",
+          "throughput": 2426.746874503717,
+          "p50": 7.04159830000026,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "cafa8743-093a-4cf8-94a1-096a76a488a7",
+          "throughput": 2460.739879707644,
+          "p50": 6.854768700000932,
+          "ok_count": 200,
+          "failed_count": 0
+        }
+      ]
+    },
+    {
+      "variant": "no_telemetry",
+      "config": {
+        "extra_flags": {
+          "no-telemetry": true
+        }
+      },
+      "status": "ok",
+      "throughput_median": 2426.499075040493,
+      "throughput_all_runs": [
+        538.0259111698306,
+        2431.72952885742,
+        2421.268621223566,
+        2482.004573349862
+      ],
+      "p50_median": 7.117155674998685,
+      "raw_runs": [
+        {
+          "id": "979ca612-314b-4b33-85ac-b21351b407f3",
+          "throughput": 538.0259111698306,
+          "p50": 36.30162660000133,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "57ac35fa-24fd-4c0a-8a41-b7427998922f",
+          "throughput": 2431.72952885742,
+          "p50": 7.045919349999167,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "030bb0f1-377d-4354-b850-28ce1b6c2969",
+          "throughput": 2421.268621223566,
+          "p50": 6.921870899999703,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "6cae151d-7283-41b6-b18e-816fea22f064",
+          "throughput": 2482.004573349862,
+          "p50": 7.188391999998203,
+          "ok_count": 200,
+          "failed_count": 0
+        }
+      ]
+    },
+    {
+      "variant": "kitchen_sink",
+      "config": {
+        "free_gpu_memory_fraction": 0.95,
+        "extra_flags": {
+          "enable_chunked_prefill": true,
+          "num_postprocess_workers": 4,
+          "no-telemetry": true
+        }
+      },
+      "status": "ok",
+      "throughput_median": 2423.0220083215027,
+      "throughput_all_runs": [
+        503.2692646395532,
+        2389.7235053450577,
+        2502.416731038461,
+        2456.320511297948
+      ],
+      "p50_median": 7.395787549999113,
+      "raw_runs": [
+        {
+          "id": "1e264464-1ca5-4007-98eb-41e985152bdf",
+          "throughput": 503.2692646395532,
+          "p50": 38.552441899999394,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "81ecff8a-c9eb-4620-b07c-a219cabb9c3d",
+          "throughput": 2389.7235053450577,
+          "p50": 6.756285950001256,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "a5ef3a2a-de49-4f39-863a-1def8fea02e9",
+          "throughput": 2502.416731038461,
+          "p50": 7.638394199997492,
+          "ok_count": 200,
+          "failed_count": 0
+        },
+        {
+          "id": "46ea51fd-6b9a-4aa9-a942-354f87247455",
+          "throughput": 2456.320511297948,
+          "p50": 7.153180900000734,
+          "ok_count": 200,
+          "failed_count": 0
+        }
+      ]
+    }
+  ]
+}

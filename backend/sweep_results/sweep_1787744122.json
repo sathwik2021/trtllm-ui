@@ -1,0 +1,444 @@
+{
+  "ran_at": 1787744122.6123545,
+  "model": "Qwen2.5-1.5B-Instruct",
+  "concurrency": 100,
+  "request_count": 200,
+  "repeats": 4,
+  "interleaved": false,
+  "results": [
+    {
+      "variant": "baseline_defaults",
+      "config": {},
+      "status": "ok",
+      "throughput_median": 1734.1362093297996,
+      "throughput_all_runs": [
+        491.1047456536731,
+        1751.135321955647,
+        1730.6267048555806,
+        1737.6457138040187
+      ],
+      "p50_median": 10.071444274999521,
+      "raw_runs": [
+        {
+          "id": "3835fba5-4e19-4813-838c-9cda30da2d6c",
+          "throughput": 491.1047456536731,
+          "p50": 39.21132954999848
+        },
+        {
+          "id": "619a9437-40a7-4bbd-922e-60a4f2841a8e",
+          "throughput": 1751.135321955647,
+          "p50": 10.313229899998987
+        },
+        {
+          "id": "25a09cfa-d7f1-4588-9f36-632c5561b39b",
+          "throughput": 1730.6267048555806,
+          "p50": 9.724052949999532
+        },
+        {
+          "id": "4b6fd915-5186-44f3-b297-ef069bb2ea78",
+          "throughput": 1737.6457138040187,
+          "p50": 9.829658650000056
+        }
+      ]
+    },
+    {
+      "variant": "mem_fraction_0.95",
+      "config": {
+        "free_gpu_memory_fraction": 0.95
+      },
+      "status": "ok",
+      "throughput_median": 1737.6322257196703,
+      "throughput_all_runs": [
+        481.7595460600476,
+        1758.5010784537162,
+        1729.8384870134025,
+        1745.4259644259378
+      ],
+      "p50_median": 9.963406975000908,
+      "raw_runs": [
+        {
+          "id": "9cd59040-a0fe-42fe-9c1d-150c149f5704",
+          "throughput": 481.7595460600476,
+          "p50": 39.53147160000117
+        },
+        {
+          "id": "f93393a6-ade8-4d18-b857-732e4f101972",
+          "throughput": 1758.5010784537162,
+          "p50": 9.751879800000097
+        },
+        {
+          "id": "57173d33-f225-48e7-b963-725b56c779fb",
+          "throughput": 1729.8384870134025,
+          "p50": 9.907930650000708
+        },
+        {
+          "id": "17ae55ef-1f64-4dfe-8265-7eaa50d2fafc",
+          "throughput": 1745.4259644259378,
+          "p50": 10.018883300001107
+        }
+      ]
+    },
+    {
+      "variant": "chunked_prefill",
+      "config": {
+        "extra_flags": {
+          "enable_chunked_prefill": true
+        }
+      },
+      "status": "ok",
+      "throughput_median": 1984.8085831677467,
+      "throughput_all_runs": [
+        531.3608589758348,
+        2490.602046726339,
+        2478.4031034219734,
+        1491.2140629135204
+      ],
+      "p50_median": 7.934163449999687,
+      "raw_runs": [
+        {
+          "id": "6727a260-96b7-42f6-bb87-a1181dc4c2f5",
+          "throughput": 531.3608589758348,
+          "p50": 36.796370599999136
+        },
+        {
+          "id": "ba9991b3-86e5-47ad-93b2-09dd4b7f54a0",
+          "throughput": 2490.602046726339,
+          "p50": 6.9326138500000525
+        },
+        {
+          "id": "89901625-8cf0-435a-ae84-3f4e85dcbe4d",
+          "throughput": 2478.4031034219734,
+          "p50": 6.830775350001204
+        },
+        {
+          "id": "21b5462c-2572-4cef-8d12-bc087875c58c",
+          "throughput": 1491.2140629135204,
+          "p50": 8.935713049999322
+        }
+      ]
+    },
+    {
+      "variant": "mem_0.95_plus_chunked_prefill",
+      "config": {
+        "free_gpu_memory_fraction": 0.95,
+        "extra_flags": {
+          "enable_chunked_prefill": true
+        }
+      },
+      "status": "ok",
+      "throughput_median": 2401.937145514791,
+      "throughput_all_runs": [
+        536.7315946790069,
+        2520.1189353997347,
+        2461.016301687468,
+        2342.8579893421143
+      ],
+      "p50_median": 7.569986575000257,
+      "raw_runs": [
+        {
+          "id": "c93201ed-1c64-43f0-bf89-4510aa920872",
+          "throughput": 536.7315946790069,
+          "p50": 36.40577369999846
+        },
+        {
+          "id": "099410b7-445e-43b2-867a-821ff8f2addf",
+          "throughput": 2520.1189353997347,
+          "p50": 7.052170549999573
+        },
+        {
+          "id": "c44d0d0c-1168-47a6-9b35-6ef2ab93c0d0",
+          "throughput": 2461.016301687468,
+          "p50": 6.732071349999387
+        },
+        {
+          "id": "48571842-03fa-4617-b115-20ff80a0a89c",
+          "throughput": 2342.8579893421143,
+          "p50": 8.087802600000941
+        }
+      ]
+    },
+    {
+      "variant": "cuda_graph_padding",
+      "config": {
+        "extra_llm_api_options": {
+          "cuda_graph_config": {
+            "enable_padding": true
+          }
+        }
+      },
+      "status": "ok",
+      "throughput_median": 2468.4091498902444,
+      "throughput_all_runs": [
+        534.7314511778984,
+        2490.8327053052826,
+        2467.6740796352456,
+        2469.144220145243
+      ],
+      "p50_median": 6.832679674998872,
+      "raw_runs": [
+        {
+          "id": "57306b49-845b-4291-bacc-c10aa8357b76",
+          "throughput": 534.7314511778984,
+          "p50": 34.9448520499991
+        },
+        {
+          "id": "48549a1f-c133-4b7a-9480-4fb8ad5b79e6",
+          "throughput": 2490.8327053052826,
+          "p50": 6.7316077499999665
+        },
+        {
+          "id": "85f91140-9775-4571-9a0c-a6c045dfdf42",
+          "throughput": 2467.6740796352456,
+          "p50": 6.57750440000018
+        },
+        {
+          "id": "3e40f4a8-3a64-4f5e-ab72-c0f7767f8431",
+          "throughput": 2469.144220145243,
+          "p50": 6.933751599997777
+        }
+      ]
+    },
+    {
+      "variant": "cuda_graph_padding_batch256",
+      "config": {
+        "extra_llm_api_options": {
+          "cuda_graph_config": {
+            "enable_padding": true,
+            "max_batch_size": 256
+          }
+        }
+      },
+      "status": "ok",
+      "throughput_median": 2480.2917747133797,
+      "throughput_all_runs": [
+        534.4577475984504,
+        2473.108386920513,
+        2500.4187076673934,
+        2487.475162506246
+      ],
+      "p50_median": 7.0766084999995655,
+      "raw_runs": [
+        {
+          "id": "b880338b-62e2-4dde-9eac-e691a8f15e61",
+          "throughput": 534.4577475984504,
+          "p50": 34.96074640000006
+        },
+        {
+          "id": "25c9792c-7315-4300-bdaa-4925005cdf79",
+          "throughput": 2473.108386920513,
+          "p50": 6.74305380000078
+        },
+        {
+          "id": "02f06956-56e1-4089-ac20-976435327677",
+          "throughput": 2500.4187076673934,
+          "p50": 7.027878099999725
+        },
+        {
+          "id": "1a7d982b-ae27-4b99-86c7-f8e7640267ff",
+          "throughput": 2487.475162506246,
+          "p50": 7.125338899999406
+        }
+      ]
+    },
+    {
+      "variant": "attn_backend_flashinfer",
+      "config": {
+        "extra_llm_api_options": {
+          "attn_backend": "FLASHINFER"
+        }
+      },
+      "status": "ok",
+      "throughput_median": 1526.961623415099,
+      "throughput_all_runs": [
+        498.58542618580094,
+        1515.1932119081275,
+        1538.7300349220704,
+        1539.4976613875351
+      ],
+      "p50_median": 13.946498524999697,
+      "raw_runs": [
+        {
+          "id": "e62337fc-d41a-423a-b88e-49acc088fdbf",
+          "throughput": 498.58542618580094,
+          "p50": 41.55869580000035
+        },
+        {
+          "id": "65243f60-f2df-470b-8e33-b724003d8eea",
+          "throughput": 1515.1932119081275,
+          "p50": 13.998460349999732
+        },
+        {
+          "id": "3099e481-0295-4506-804c-b9ada1a224ba",
+          "throughput": 1538.7300349220704,
+          "p50": 13.894536699999662
+        },
+        {
+          "id": "2101e9d7-1501-4188-bd9e-14b2c711b3df",
+          "throughput": 1539.4976613875351,
+          "p50": 13.189941849997922
+        }
+      ]
+    },
+    {
+      "variant": "scheduler_max_utilization",
+      "config": {
+        "extra_llm_api_options": {
+          "scheduler_config": {
+            "capacity_scheduler_policy": "MAX_UTILIZATION"
+          }
+        }
+      },
+      "status": "ok",
+      "throughput_median": 2456.0003962871506,
+      "throughput_all_runs": [
+        547.0132781228643,
+        2459.6012657503907,
+        2452.39952682391,
+        2478.6629417526033
+      ],
+      "p50_median": 7.160293600000841,
+      "raw_runs": [
+        {
+          "id": "94d38683-5122-40f2-a1fa-e2de5f873668",
+          "throughput": 547.0132781228643,
+          "p50": 35.682133900001645
+        },
+        {
+          "id": "d6ef747a-cf83-4dcb-9c04-acb379f72b51",
+          "throughput": 2459.6012657503907,
+          "p50": 7.128083949999564
+        },
+        {
+          "id": "2f4c6852-6f46-409c-92f9-8d6b9eca346d",
+          "throughput": 2452.39952682391,
+          "p50": 6.887916949999635
+        },
+        {
+          "id": "1657f057-239b-4def-83cd-ec09afbe40de",
+          "throughput": 2478.6629417526033,
+          "p50": 7.192503250002119
+        }
+      ]
+    },
+    {
+      "variant": "postprocess_workers_4",
+      "config": {
+        "extra_flags": {
+          "num_postprocess_workers": 4
+        }
+      },
+      "status": "ok",
+      "throughput_median": 2451.0635231894266,
+      "throughput_all_runs": [
+        543.1742588983993,
+        2456.9287155233865,
+        2445.198330855467,
+        2476.6573684543437
+      ],
+      "p50_median": 7.142191000001731,
+      "raw_runs": [
+        {
+          "id": "26af3990-bd30-4199-88b7-255da15030cd",
+          "throughput": 543.1742588983993,
+          "p50": 35.804762499999924
+        },
+        {
+          "id": "f2879075-acd7-4cfc-a526-046749cc5d12",
+          "throughput": 2456.9287155233865,
+          "p50": 7.195482550001543
+        },
+        {
+          "id": "c1f73b45-5459-43da-9408-910aa62eab38",
+          "throughput": 2445.198330855467,
+          "p50": 6.649825599999531
+        },
+        {
+          "id": "b429b8ae-7575-4215-9f02-2b5b21590cb5",
+          "throughput": 2476.6573684543437,
+          "p50": 7.088899450001918
+        }
+      ]
+    },
+    {
+      "variant": "no_telemetry",
+      "config": {
+        "extra_flags": {
+          "no-telemetry": true
+        }
+      },
+      "status": "ok",
+      "throughput_median": 2468.5969116450947,
+      "throughput_all_runs": [
+        551.2450930059289,
+        2498.7654694261632,
+        2464.9294539614434,
+        2472.264369328746
+      ],
+      "p50_median": 7.034304799999518,
+      "raw_runs": [
+        {
+          "id": "fcd26c6b-ffff-4707-84c5-2fed3ed3f18d",
+          "throughput": 551.2450930059289,
+          "p50": 35.40160724999987
+        },
+        {
+          "id": "fbc2cff8-5044-42d3-bcdb-71db2dd90755",
+          "throughput": 2498.7654694261632,
+          "p50": 6.988127999999051
+        },
+        {
+          "id": "001ba72f-e9ea-4060-b696-f2c2a815c7ef",
+          "throughput": 2464.9294539614434,
+          "p50": 6.862844200000836
+        },
+        {
+          "id": "413be8d7-c2ea-4954-8edc-2608b822345f",
+          "throughput": 2472.264369328746,
+          "p50": 7.080481599999985
+        }
+      ]
+    },
+    {
+      "variant": "kitchen_sink",
+      "config": {
+        "free_gpu_memory_fraction": 0.95,
+        "extra_flags": {
+          "enable_chunked_prefill": true,
+          "num_postprocess_workers": 4,
+          "no-telemetry": true
+        }
+      },
+      "status": "ok",
+      "throughput_median": 2467.3691577706663,
+      "throughput_all_runs": [
+        549.2703756173398,
+        2490.6888272241968,
+        2457.07341924328,
+        2477.6648962980526
+      ],
+      "p50_median": 7.025503425001261,
+      "raw_runs": [
+        {
+          "id": "92f6d75c-3f92-4d55-ad51-64047f463793",
+          "throughput": 549.2703756173398,
+          "p50": 35.54795970000123
+        },
+        {
+          "id": "96f90e98-7bcd-48de-b177-783dc7d3853b",
+          "throughput": 2490.6888272241968,
+          "p50": 6.883642700002383
+        },
+        {
+          "id": "4788cb47-2cb8-4d32-a280-bea452a4ee99",
+          "throughput": 2457.07341924328,
+          "p50": 7.068391300001167
+        },
+        {
+          "id": "f2946ee6-1f0c-4f52-a663-77a1449918a1",
+          "throughput": 2477.6648962980526,
+          "p50": 6.982615550001356
+        }
+      ]
+    }
+  ]
+}
