@@ -97,6 +97,20 @@ const CHARACTER_PROFILES = [
     ],
     bgText: ["CODEX", "COUNCIL"],
   },
+  {
+    id: "trtllm",
+    name: "TensorRT-LLM Control Panel",
+    title: "Localhost GPU Inference Orchestrator",
+    summary: "A FastAPI control panel for running TensorRT-LLM locally: model discovery, Docker deployment lifecycle, GPU polling, and command generation — no cloud, no auth surface exposed.",
+    image: "/logo.png",
+    stats: [
+      { label: "BACKEND", value: "FastAPI, Uvicorn" },
+      { label: "DEPLOYMENT", value: "Docker Lifecycle Management" },
+      { label: "SCOPE", value: "Diagnostics, GPU Polling, Chat/Test UI" },
+      { label: "SECURITY", value: "Localhost-Only, No Auth Exposed" },
+    ],
+    bgText: ["TRT", "LLM"],
+  },
 ];
 
 const ENGINEERING_PILLARS = [
@@ -188,6 +202,21 @@ const PROJECTS = [
       "Combines YOLOv8 detection with OpenCV's CSRT/KCF/MOSSE trackers, and falls back to YOLO plus histogram matching when a target is lost. Tracking state is saved and resumed automatically between runs.",
     stack: ["Python", "OpenCV", "YOLOv8", "Ultralytics", "NumPy"],
     link: null,
+  },
+  {
+    id: "trtllm-ui",
+    name: "TensorRT-LLM Control Panel",
+    category: "Infra & Tooling",
+    tagline: "Localhost orchestrator for TensorRT-LLM",
+    years: "2026",
+    featured: false,
+    stages: ["Model Discovery", "Docker Deploy", "GPU Monitor"],
+    description:
+      "A FastAPI-based localhost control panel for running TensorRT-LLM: model discovery, command generation, Docker deployment lifecycle, GPU polling, and a basic chat/test UI.",
+    detail:
+      "Deliberately scoped to v1 — no auth, no HF downloads, no engine building or quantization. Docker publishes ports to 127.0.0.1 only while TensorRT-LLM binds 0.0.0.0 inside the container, kept that way on purpose for the container network.",
+    stack: ["Python", "FastAPI", "Docker", "TensorRT-LLM", "Uvicorn"],
+    link: "https://github.com/sathwik2021/trtllm-ui",
   },
 ];
 
@@ -1162,7 +1191,7 @@ export default function Portfolio() {
 
         {/* PROJECT FILTER TABS */}
         <div className="pf-filter-tabs">
-          {["All", "AI & NLP", "Computer Vision"].map((cat) => (
+          {["All", "AI & NLP", "Computer Vision", "Infra & Tooling"].map((cat) => (
             <button
               key={cat}
               className={`pf-tab-btn ${activeCategory === cat ? "pf-tab-active" : ""}`}
