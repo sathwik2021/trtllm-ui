@@ -36,7 +36,7 @@ const PROFILE = {
   github: "https://github.com/sathwik2021",
   linkedin: "https://www.linkedin.com/in/peechara-sathwik-90414432b/",
   // Connects directly to raw GitHub URL — updating the file on GitHub auto-updates the download
-  resume: "https://raw.githubusercontent.com/sathwik2021/Peechara_Sathwik_Resume/main/Peechara_Sathwik_Resume.pdf",
+  resume: "https://raw.githubusercontent.com/sathwik2021/Peechara_Sathwik_Resume/main/Peechara_Sathwik_Resume.pdf?v=2",
   localResume: "/Peechara_Sathwik_Resume.pdf",
 };
 
